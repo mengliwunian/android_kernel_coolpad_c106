@@ -281,6 +281,9 @@ static int mdss_dsi_panel_power_off(struct mdss_panel_data *pdata)
 		ret = 0;
 	}
 
+#ifdef CONFIG_PRODUCT_C1
+	msleep(40);
+#endif
 	if (mdss_dsi_pinctrl_set_state(ctrl_pdata, false))
 		pr_debug("reset disable: pinctrl not enabled\n");
 
@@ -290,6 +293,21 @@ static int mdss_dsi_panel_power_off(struct mdss_panel_data *pdata)
 	if (ret)
 		pr_err("%s: failed to disable vregs for %s\n",
 			__func__, __mdss_dsi_pm_name(DSI_PANEL_PM));
+
+#ifdef CONFIG_YL_LCD_VDDI_ENABLE_GPIO
+	if (gpio_is_valid(ctrl_pdata->disp_vddi_enable_gpio)) {
+/* add for lcd power off timing */
+#ifdef CONFIG_PRODUCT_C1
+		usleep(7 * 1000);
+#endif
+		ret = mdss_dsi_panel_vddi_enable(pdata, 0);
+		if (ret) {
+			pr_err("%s: Panel vddi disable failed. rc=%d\n",
+				__func__, ret);
+			ret = 0;
+		}
+	}
+#endif
 
 end:
 	return ret;
@@ -308,6 +326,18 @@ static int mdss_dsi_panel_power_on(struct mdss_panel_data *pdata)
 	ctrl_pdata = container_of(pdata, struct mdss_dsi_ctrl_pdata,
 				panel_data);
 
+#ifdef CONFIG_YL_LCD_VDDI_ENABLE_GPIO
+	if (gpio_is_valid(ctrl_pdata->disp_vddi_enable_gpio)) {
+		ret = mdss_dsi_panel_vddi_enable(pdata, 1);
+		if (ret)
+			pr_err("%s: Panel vddi enable failed. rc=%d\n",
+					__func__, ret);
+	}
+#endif
+/* add for lcd power on timing */
+#ifdef CONFIG_PRODUCT_C1
+	usleep(3 * 1000);
+#endif
 	ret = msm_dss_enable_vreg(
 		ctrl_pdata->panel_power_data.vreg_config,
 		ctrl_pdata->panel_power_data.num_vreg, 1);
@@ -3217,7 +3247,14 @@ static int mdss_dsi_parse_gpio_params(struct platform_device *ctrl_pdev,
 	if (!gpio_is_valid(ctrl_pdata->rst_gpio))
 		pr_err("%s:%d, reset gpio not specified\n",
 						__func__, __LINE__);
-
+#ifdef CONFIG_YL_LCD_VDDI_ENABLE_GPIO
+	ctrl_pdata->disp_vddi_enable_gpio = of_get_named_gpio(
+			ctrl_pdev->dev.of_node,
+				"qcom,platform-vddi-enable-gpio", 0);
+	if (!gpio_is_valid(ctrl_pdata->disp_vddi_enable_gpio))
+		pr_err("%s:%d, vddi enable gpio not specified\n",
+				__func__, __LINE__);
+#endif
 	ctrl_pdata->lcd_mode_sel_gpio = of_get_named_gpio(
 			ctrl_pdev->dev.of_node, "qcom,panel-mode-gpio", 0);
 	if (!gpio_is_valid(ctrl_pdata->lcd_mode_sel_gpio)) {

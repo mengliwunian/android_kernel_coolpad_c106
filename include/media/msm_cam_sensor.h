@@ -50,6 +50,36 @@
 #define MSM_V4L2_PIX_FMT_SRGGB14 v4l2_fourcc('R', 'G', '1', '4')
 	/* 14  RGRG.. GBGB.. */
 
+/*add camera module defines on 2016/05/04*/
+#define SENSOR_ID_8865 0x8865
+#define MODULE_SUNNY_8865 (SENSOR_ID_8865 << 16 | 0x01)
+#define MODULE_OFILM_8865 (SENSOR_ID_8865 << 16 | 0x07)
+#define MODULE_FOXCONN_8865 (SENSOR_ID_8865 << 16 | 0x11)
+#define MODULE_QTECH_8865 (SENSOR_ID_8865 << 16 | 0x06)
+
+#define SENSOR_ID_OV8856 0x885A
+#define MODULE_SUNNY_OV8856 (SENSOR_ID_OV8856 << 16 | 0x01)
+#define MODULE_OFILM_OV8856 (SENSOR_ID_OV8856 << 16 | 0x07)
+#define MODULE_QTECH_OV8856 (SENSOR_ID_OV8856 << 16 | 0x06)
+#define MODULE_ZHENGQIAO_OV8856 (SENSOR_ID_OV8856 << 16 | 0x08)
+
+#define SENSOR_ID_IMX219 0x0219
+#define MODULE_OFILM_IMX219 (SENSOR_ID_IMX219 << 16 | 0x07)
+#define MODULE_QTECH_IMX219 (SENSOR_ID_IMX219 << 16 | 0x06)
+
+#define SENSOR_ID_IMX214 0x0214
+#define MODULE_SUNNY_IMX214  (SENSOR_ID_IMX214 << 16 | 0x01)
+#define MODULE_OFILM_IMX214  (SENSOR_ID_IMX214 << 16 | 0x07)
+
+#define SENSOR_ID_OV16880 0x0168
+#define MODULE_OFILM_OV16880  (SENSOR_ID_OV16880 << 16 | 0x07)
+
+#define SENSOR_ID_IMX258 0x0258
+#define MODULE_SUNNY_IMX258 (SENSOR_ID_IMX258 << 16 | 0x01)
+#define MODULE_OFILM_IMX258 (SENSOR_ID_IMX258 << 16 | 0x07)
+#define MODULE_QTECH_IMX258 (SENSOR_ID_IMX258 << 16 | 0x06)
+#define MODULE_ZHENGQIAO_IMX258 (SENSOR_ID_IMX258 << 16 | 0x05)
+
 enum flash_type {
 	LED_FLASH = 1,
 	STROBE_FLASH,
@@ -337,6 +367,8 @@ struct msm_camera_sensor_slave_info32 {
 	uint8_t  is_init_params_valid;
 	struct msm_sensor_init_params sensor_init_params;
 	enum msm_sensor_output_format_t output_format;
+	char sensor_module_info[64];
+	uint8_t sensor_gpio_id;
 };
 
 struct msm_camera_csid_lut_params32 {
@@ -435,6 +467,8 @@ enum msm_sensor_cfg_type_t {
 	CFG_WRITE_I2C_ARRAY_ASYNC,
 	CFG_WRITE_I2C_ARRAY_SYNC,
 	CFG_WRITE_I2C_ARRAY_SYNC_BLOCK,
+	CFG_SET_MODULE_ID,
+        CFG_WRITE_EEPROM,
 };
 
 enum msm_actuator_cfg_type_t {

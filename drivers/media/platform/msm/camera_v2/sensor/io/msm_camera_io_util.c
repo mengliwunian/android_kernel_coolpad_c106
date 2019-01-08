@@ -589,6 +589,7 @@ int msm_camera_request_gpio_table(struct gpio *gpio_tbl, uint8_t size,
 	int gpio_en)
 {
 	int rc = 0, i = 0, err = 0;
+	static int gpio_num = 255;
 
 	if (!gpio_tbl || !size) {
 		pr_err("%s:%d invalid gpio_tbl %p / size %d\n", __func__,
@@ -612,10 +613,18 @@ int msm_camera_request_gpio_table(struct gpio *gpio_tbl, uint8_t size,
 				pr_err("%s:%d gpio %d:%s request fails\n",
 					__func__, __LINE__,
 					gpio_tbl[i].gpio, gpio_tbl[i].label);
+				if (!strcmp(gpio_tbl[i].label, "CAM_VIO2"))
+					gpio_num = i;
 			}
 		}
 	} else {
-		gpio_free_array(gpio_tbl, size);
+	//	gpio_free_array(gpio_tbl, size);
+		for (i = 0; i < size; i++) {
+		if ((i != gpio_num) && strcmp(gpio_tbl[i].label, "CAM_VIO2"))
+			gpio_free(gpio_tbl[i].gpio);
+		else
+			gpio_num = 255;
+		}
 	}
 	return rc;
 }

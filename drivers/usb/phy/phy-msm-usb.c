@@ -51,6 +51,9 @@
 #include <linux/qpnp/qpnp-adc.h>
 
 #include <linux/msm-bus.h>
+#ifdef CONFIG_TYPE_C_INFO
+#include <linux/type-c_notify.h>
+#endif
 
 #define MSM_USB_BASE	(motg->regs)
 #define MSM_USB_PHY_CSR_BASE (motg->phy_csr_regs)
@@ -95,7 +98,7 @@ module_param(lpm_disconnect_thresh , uint, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(lpm_disconnect_thresh,
 	"Delay before entering LPM on USB disconnect");
 
-static bool floated_charger_enable;
+static bool floated_charger_enable=1;
 module_param(floated_charger_enable , bool, S_IRUGO | S_IWUSR);
 MODULE_PARM_DESC(floated_charger_enable,
 	"Whether to enable floated charger");
@@ -130,6 +133,30 @@ static struct power_supply *psy;
 
 static bool aca_id_turned_on;
 static bool legacy_power_supply;
+extern bool is_detecting_usb_type;
+#ifdef CONFIG_TYPE_C_INFO
+#define WAIT_OTG_POWER_TIMEOUT_MS    msecs_to_jiffies(100) /* 100ms */
+static u8 otg_power_on = 0;
+static wait_queue_head_t    set_otg_power_wait;
+static int typec_set_otg_power_notifier(struct notifier_block *self,unsigned long action, void *data);
+static struct notifier_block typec_set_otg_power_notif = {
+    .notifier_call = typec_set_otg_power_notifier,
+};
+
+static int typec_set_otg_power_notifier(struct notifier_block *self,unsigned long action, void *data)
+{
+    struct type_c_event_data *evdata = data;
+    u8 *on;
+
+    if (evdata && evdata->data && action == TYPE_C_SET_OTG_POWER)
+    {
+        on=evdata->data;
+        otg_power_on=*on;
+        printk("%s:otg_power_on=%d\n",__func__,otg_power_on);
+    }
+    return NOTIFY_OK;
+}
+#endif
 static inline bool aca_enabled(void)
 {
 #ifdef CONFIG_USB_MSM_ACA
@@ -2265,6 +2292,12 @@ static void msm_hsusb_vbus_power(struct msm_otg *motg, bool on)
 	 */
 	if (on) {
 		msm_otg_notify_host_mode(motg, on);
+#ifdef CONFIG_TYPE_C_INFO
+        wait_event_interruptible_timeout(
+        set_otg_power_wait,
+        (1 == otg_power_on),
+        WAIT_OTG_POWER_TIMEOUT_MS);
+#endif
 		ret = regulator_enable(vbus_otg);
 		if (ret) {
 			pr_err("unable to enable vbus_otg\n");
@@ -2279,6 +2312,25 @@ static void msm_hsusb_vbus_power(struct msm_otg *motg, bool on)
 		}
 		msm_otg_notify_host_mode(motg, on);
 		vbus_is_on = false;
+	}
+}
+void msm_otg_vbus_power_set(bool enable)
+{
+	int ret;
+	if (enable) {
+		pr_info("%s: enable vbus\n", __func__);
+		ret = regulator_enable(vbus_otg);
+		if (ret) {
+			pr_err("unable to enable vbus_otg\n");
+			return;
+		}
+	} else {
+		pr_info("%s: disable vbus\n", __func__);
+		ret = regulator_disable(vbus_otg);
+		if (ret) {
+			pr_err("unable to disable vbus_otg\n");
+			return;
+		}
 	}
 }
 
@@ -3172,7 +3224,7 @@ static void msm_chg_detect_work(struct work_struct *w)
 		if (motg->chg_type == USB_DCP_CHARGER)
 			ulpi_write(phy, 0x2, 0x85);
 
-		dev_dbg(phy->dev, "chg_type = %s\n",
+		dev_info(phy->dev, "chg_type = %s\n",
 			chg_to_string(motg->chg_type));
 		msm_otg_dbg_log_event(phy, "CHG WORK: CHG_TYPE",
 				motg->chg_type, motg->inputs);
@@ -4439,6 +4491,25 @@ static irqreturn_t msm_id_irq(int irq, void *data)
 	return IRQ_HANDLED;
 }
 
+#ifdef CONFIG_YL_FAIRCHILDIC_USB_TYPEC
+static struct msm_otg *motg_for_typec = NULL;
+static int otg_power_set_property_usb(struct power_supply *psy,
+		enum power_supply_property psp,
+		const union power_supply_propval *val);
+/* DFP turn on vbus for UFP
+ * on = 1 turn on the vbus
+ * on = 0 turn off the vbus
+ */
+void dfp_vbus_switch(int on)
+{
+	union power_supply_propval val;
+
+	val.intval = on;
+	otg_power_set_property_usb(&motg_for_typec->usb_psy, POWER_SUPPLY_PROP_USB_OTG, &val);
+}
+EXPORT_SYMBOL(dfp_vbus_switch);
+#endif
+
 int msm_otg_pm_notify(struct notifier_block *notify_block,
 					unsigned long mode, void *unused)
 {
@@ -4824,7 +4895,13 @@ static int otg_power_get_property_usb(struct power_supply *psy,
 		break;
 	/* Reflect USB enumeration */
 	case POWER_SUPPLY_PROP_ONLINE:
-		val->intval = motg->online;
+		if(is_detecting_usb_type) {
+			val->intval = 1;
+			pr_debug("%s: force usb online, psp %d, value %d.\n",
+				__func__, psp, val->intval);
+		} else {
+			val->intval = motg->online;
+		}
 		break;
 	case POWER_SUPPLY_PROP_TYPE:
 		val->intval = psy->type;
@@ -5598,6 +5675,10 @@ static int msm_otg_probe(struct platform_device *pdev)
 		return ret;
 	}
 
+#ifdef CONFIG_YL_FAIRCHILDIC_USB_TYPEC
+	motg_for_typec = motg;
+#endif
+
 	/*
 	 * USB Core is running its protocol engine based on CORE CLK,
 	 * CORE CLK  must be running at >55Mhz for correct HSUSB
@@ -6261,6 +6342,12 @@ static int msm_otg_probe(struct platform_device *pdev)
 	register_pm_notifier(&motg->pm_notify);
 	msm_otg_dbg_log_event(phy, "OTG PROBE", motg->caps, motg->lpm_flags);
 
+#ifdef CONFIG_TYPE_C_INFO
+    init_waitqueue_head(&set_otg_power_wait);
+    ret = type_c_otg_power_register_client(&typec_set_otg_power_notif);
+    if (ret)
+        pr_err("Unable to register typec_set_otg_power_notif: %d\n",ret);
+#endif
 	return 0;
 
 remove_cdev:
@@ -6343,6 +6430,9 @@ static int msm_otg_remove(struct platform_device *pdev)
 		return -EBUSY;
 
 	unregister_pm_notifier(&motg->pm_notify);
+#ifdef CONFIG_TYPE_C_INFO
+    type_c_otg_power_unregister_client(&typec_set_otg_power_notif);
+#endif
 
 	if (!motg->ext_chg_device) {
 		device_destroy(motg->ext_chg_class, motg->ext_chg_dev);

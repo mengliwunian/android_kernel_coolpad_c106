@@ -30,6 +30,9 @@
 #include <linux/of_gpio.h>
 #include <linux/spinlock.h>
 #include <linux/pinctrl/consumer.h>
+#ifdef CONFIG_CREATE_NODE
+#include <linux/createnode.h>
+#endif
 
 struct gpio_button_data {
 	const struct gpio_keys_button *button;
@@ -722,6 +725,10 @@ static void gpio_remove_key(struct gpio_button_data *bdata)
 		gpio_free(bdata->button->gpio);
 }
 
+#ifdef CONFIG_CREATE_NODE
+static int enable_vol_gpio_wake_func;
+#endif
+
 static int gpio_keys_probe(struct platform_device *pdev)
 {
 	struct device *dev = &pdev->dev;
@@ -816,6 +823,10 @@ static int gpio_keys_probe(struct platform_device *pdev)
 
 	device_init_wakeup(&pdev->dev, wakeup);
 
+#ifdef CONFIG_CREATE_NODE
+	enable_vol_gpio_wake_func = 0;
+#endif
+
 	return 0;
 
  fail3:
@@ -887,8 +898,16 @@ static int gpio_keys_suspend(struct device *dev)
 	if (device_may_wakeup(dev)) {
 		for (i = 0; i < ddata->pdata->nbuttons; i++) {
 			struct gpio_button_data *bdata = &ddata->data[i];
-			if (bdata->button->wakeup)
+			if ((bdata->button->wakeup)
+#ifdef CONFIG_CREATE_NODE
+				&& (get_smartphone_calling_enable() > 0)
+#endif
+				) {
+#ifdef CONFIG_CREATE_NODE
+				enable_vol_gpio_wake_func++;
+#endif
 				enable_irq_wake(bdata->irq);
+			}
 		}
 	} else {
 		mutex_lock(&input->mutex);
@@ -918,8 +937,16 @@ static int gpio_keys_resume(struct device *dev)
 	if (device_may_wakeup(dev)) {
 		for (i = 0; i < ddata->pdata->nbuttons; i++) {
 			struct gpio_button_data *bdata = &ddata->data[i];
-			if (bdata->button->wakeup)
+			if (bdata->button->wakeup
+#ifdef CONFIG_CREATE_NODE
+				&& (enable_vol_gpio_wake_func > 0)
+#endif
+				) {
+#ifdef CONFIG_CREATE_NODE
+				enable_vol_gpio_wake_func--;
+#endif
 				disable_irq_wake(bdata->irq);
+			}
 		}
 	} else {
 		mutex_lock(&input->mutex);

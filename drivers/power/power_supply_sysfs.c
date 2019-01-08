@@ -31,6 +31,8 @@
  * (as a macro let's say).
  */
 
+extern bool is_detecting_usb_type;
+extern bool usb_enumeration_failed;
 #define POWER_SUPPLY_ATTR(_name)					\
 {									\
 	.attr = { .name = #_name },					\
@@ -75,10 +77,24 @@ static ssize_t power_supply_show_property(struct device *dev,
 	const ptrdiff_t off = attr - power_supply_attrs;
 	union power_supply_propval value;
 
-	if (off == POWER_SUPPLY_PROP_TYPE)
-		value.intval = psy->type;
-	else
+	if (off == POWER_SUPPLY_PROP_TYPE) {
+		if(is_detecting_usb_type && (psy->type == POWER_SUPPLY_TYPE_UNKNOWN)) {
+			value.intval = POWER_SUPPLY_TYPE_UNKNOWN;
+			pr_debug("%s: force set usb type dcp, psy->type %d, value %d.\n",
+				__func__, psy->type, value.intval);
+		}
+		else if(usb_enumeration_failed && (psy->type == POWER_SUPPLY_TYPE_USB))
+		{
+			value.intval = POWER_SUPPLY_TYPE_UNKNOWN;
+			pr_debug("%s:usb enum failed force set usb type dcp, psy->type %d, value %d.\n",
+				__func__, psy->type, value.intval);
+		}
+		else {
+			value.intval = psy->type;
+		}
+	} else {
 		ret = psy->get_property(psy, off, &value);
+	}
 
 	if (ret < 0) {
 		if (ret == -ENODATA)
@@ -105,6 +121,8 @@ static ssize_t power_supply_show_property(struct device *dev,
 	else if (off == POWER_SUPPLY_PROP_SCOPE)
 		return sprintf(buf, "%s\n", scope_text[value.intval]);
 	else if (off >= POWER_SUPPLY_PROP_MODEL_NAME)
+		return sprintf(buf, "%s\n", value.strval);
+	else if (off == POWER_SUPPLY_PROP_VENDOR)
 		return sprintf(buf, "%s\n", value.strval);
 
 	if (off == POWER_SUPPLY_PROP_CHARGE_COUNTER_EXT)
@@ -236,6 +254,7 @@ static struct device_attribute power_supply_attrs[] = {
 	/* Local extensions of type int64_t */
 	POWER_SUPPLY_ATTR(charge_counter_ext),
 	/* Properties of type `const char *' */
+	POWER_SUPPLY_ATTR(vendor),
 	POWER_SUPPLY_ATTR(model_name),
 	POWER_SUPPLY_ATTR(manufacturer),
 	POWER_SUPPLY_ATTR(serial_number),

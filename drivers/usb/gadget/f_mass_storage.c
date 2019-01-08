@@ -235,6 +235,10 @@ static int write_error_after_csw_sent;
 static int must_report_residue;
 static int csw_hack_sent;
 #endif
+static bool ums_mode = false;
+static int ums_count = 0;
+static bool cdrom_mode = false;
+static int cdrom_count = 0;
 /*-------------------------------------------------------------------------*/
 
 /*If USB mass storage vfs operation is stuck for more than 10 sec
@@ -546,6 +550,7 @@ static int fsg_setup(struct usb_function *f,
 	u16			w_value = le16_to_cpu(ctrl->wValue);
 	u16			w_length = le16_to_cpu(ctrl->wLength);
 
+	u8 nluns = 0;
 	if (!fsg_is_set(fsg->common))
 		return -EOPNOTSUPP;
 
@@ -583,7 +588,13 @@ static int fsg_setup(struct usb_function *f,
 				w_length != 1)
 			return -EDOM;
 		VDBG(fsg, "get max LUN\n");
-		*(u8 *)req->buf = fsg->common->nluns - 1;
+		if (ums_mode) {
+			nluns += ums_count;
+		}
+		if (cdrom_mode) {
+			nluns += cdrom_count;
+		}
+		*(u8 *)req->buf = nluns - 1;
 
 		/* Respond with data/status */
 		req->length = min((u16)1, w_length);
@@ -2342,6 +2353,9 @@ static int received_cbw(struct fsg_dev *fsg, struct fsg_buffhd *bh)
 	if (common->data_size == 0)
 		common->data_dir = DATA_DIR_NONE;
 	common->lun = cbw->Lun;
+	if (!ums_mode) {
+		common->lun += ums_count;
+	}
 	if (common->lun < common->nluns)
 		common->curlun = &common->luns[common->lun];
 	else
@@ -2849,6 +2863,11 @@ static int create_lun_device(struct fsg_common *common,
 
 	for (i = add_lun_index; i < nluns; ++i, ++curlun, ++lcfg) {
 		curlun->cdrom = !!lcfg->cdrom;
+		if (!curlun->cdrom) {
+			ums_count += 1;
+		} else {
+			cdrom_count += 1;
+		}
 		curlun->ro = lcfg->cdrom || lcfg->ro;
 		curlun->initially_ro = curlun->ro;
 		curlun->removable = lcfg->removable;

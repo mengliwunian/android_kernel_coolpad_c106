@@ -25,6 +25,10 @@
 #include <linux/qpnp/power-on.h>
 #include <linux/of_address.h>
 
+#ifdef CONFIG_SET_DLOAD_MODE_BY_PP_FLAG
+#include <linux/yl_params.h>
+#endif
+
 #include <asm/cacheflush.h>
 #include <asm/system_misc.h>
 
@@ -43,6 +47,26 @@
 #define SCM_EDLOAD_MODE			0X01
 #define SCM_DLOAD_CMD			0x10
 
+
+enum yl_reboot_mode {
+	FASTBOOT_MODE = 0x77665500,
+	NORMAL_REBOOT_MODE,
+	RECOVERY_MODE,
+	RTC_MODE,
+
+	SYSEXCEP_REBOOT_MODE = 0x77665510,
+	SILENCE_REBOOT_MODE,
+	SMOKE_REBOOT_MODE,
+	OTA_BY_FORCE_MODE,
+	FASTBOOT_REBOOT_MODE,
+	RECOVERY_OVER_MODE,
+	LOWMEM_MODE,
+	RUIMREFRESH_MODE,
+	LOSTCARD_MODE,
+	FASTMMI_MODE,
+	NULL_CMD_MODE,
+	INVALID_REBOOT_MODE
+};
 
 static int restart_mode;
 void *restart_reason;
@@ -66,6 +90,23 @@ static int dload_set(const char *val, struct kernel_param *kp);
 static int download_mode = 1;
 module_param_call(download_mode, dload_set, param_get_int,
 			&download_mode, 0644);
+
+static int __init download_mode_set(char *str)
+{
+	int val;
+
+	val = *str - '0';
+	pr_debug("download_mode=%d, %s\n", download_mode, str);
+
+	/* If download_mode is not zero or one, ignore. */
+	if (val >> 1)
+		return -EINVAL;
+
+	download_mode = val;
+	return 1;
+}
+__setup("download_mode=", download_mode_set);
+
 static int panic_prep_restart(struct notifier_block *this,
 			      unsigned long event, void *ptr)
 {
@@ -212,6 +253,18 @@ static void halt_spmi_pmic_arbiter(void)
 	}
 }
 
+#ifdef CONFIG_SET_DLOAD_MODE_BY_PP_FLAG
+#define ENABLE_DLOAD_MODE   49
+static int get_dload_flag_from_params_partition(void)
+{
+	char buf_dload[512] = "PROJECT1";
+	struct Project1Info *read_dload_buf = (struct Project1Info *)buf_dload;
+
+	yl_params_kernel_read(buf_dload, 512);
+	return read_dload_buf->dload_flag;
+}
+#endif
+
 static void msm_restart_prepare(const char *cmd)
 {
 	bool need_warm_reset = false;
@@ -227,15 +280,17 @@ static void msm_restart_prepare(const char *cmd)
 			(in_panic || restart_mode == RESTART_DLOAD));
 #endif
 
+#ifdef CONFIG_SET_DLOAD_MODE_BY_PP_FLAG
+	/*The flag is setted in engineer mode by tester*/
+	if (ENABLE_DLOAD_MODE == get_dload_flag_from_params_partition())
+		set_dload_mode(1);
+#endif
+
 	if (qpnp_pon_check_hard_reset_stored()) {
 		/* Set warm reset as true when device is in dload mode
 		 *  or device doesn't boot up into recovery, bootloader or rtc.
 		 */
-		if (get_dload_mode() ||
-			((cmd != NULL && cmd[0] != '\0') &&
-			strcmp(cmd, "recovery") &&
-			strcmp(cmd, "bootloader") &&
-			strcmp(cmd, "rtc")))
+		if (get_dload_mode())
 			need_warm_reset = true;
 	} else {
 		need_warm_reset = (get_dload_mode() ||
@@ -253,15 +308,12 @@ static void msm_restart_prepare(const char *cmd)
 		if (!strncmp(cmd, "bootloader", 10)) {
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_BOOTLOADER);
-			__raw_writel(0x77665500, restart_reason);
-		} else if (!strncmp(cmd, "recovery", 8)) {
+			__raw_writel(FASTBOOT_MODE, restart_reason);
+		} else if (!strncmp(cmd, "recovery", 8) &&
+				(strlen(cmd) == 8)) {
 			qpnp_pon_set_restart_reason(
 				PON_RESTART_REASON_RECOVERY);
-			__raw_writel(0x77665502, restart_reason);
-		} else if (!strcmp(cmd, "rtc")) {
-			qpnp_pon_set_restart_reason(
-				PON_RESTART_REASON_RTC);
-			__raw_writel(0x77665503, restart_reason);
+			__raw_writel(RECOVERY_MODE, restart_reason);
 		} else if (!strncmp(cmd, "oem-", 4)) {
 			unsigned long code;
 			int ret;
@@ -271,9 +323,37 @@ static void msm_restart_prepare(const char *cmd)
 					     restart_reason);
 		} else if (!strncmp(cmd, "edl", 3)) {
 			enable_emergency_dload_mode();
+		} else if (!strncmp(cmd, "reboot", 6)) {
+			__raw_writel(NORMAL_REBOOT_MODE, restart_reason);
+		} else if (!strncmp(cmd, "silence", 7)) {
+			__raw_writel(SILENCE_REBOOT_MODE, restart_reason);
+		} else if (!strncmp(cmd, "smoke", 5)) {
+			__raw_writel(SMOKE_REBOOT_MODE, restart_reason);
+		} else if (!strncmp(cmd, "otabyforce", 10)) {
+			__raw_writel(OTA_BY_FORCE_MODE, restart_reason);
+		} else if (!strncmp(cmd, "recovery-over", 13) &&
+				(strlen(cmd) == 13)) {
+			__raw_writel(RECOVERY_OVER_MODE, restart_reason);
+		} else if (!strncmp(cmd, "lowmem", 6)) {
+			__raw_writel(LOWMEM_MODE, restart_reason);
+		} else if (!strncmp(cmd, "RuimRefresh", 11)) {
+			__raw_writel(RUIMREFRESH_MODE, restart_reason);
+		} else if (!strncmp(cmd, "lostcard", 8)) {
+			__raw_writel(LOSTCARD_MODE, restart_reason);
+		} else if (!strncmp(cmd, "rtc", 3)) {
+			qpnp_pon_set_restart_reason(
+				PON_RESTART_REASON_RTC);
+			__raw_writel(RTC_MODE, restart_reason);
+		} else if (!strncmp(cmd, "fastmmi", 7)) {
+			__raw_writel(FASTMMI_MODE, restart_reason);
 		} else {
-			__raw_writel(0x77665501, restart_reason);
+			__raw_writel(SYSEXCEP_REBOOT_MODE, restart_reason);
 		}
+	} else {
+		__raw_writel(NULL_CMD_MODE, restart_reason);
+		}
+	if(in_panic){
+		qpnp_pon_set_restart_reason(PON_RESTART_REASON_PANIC);
 	}
 
 	flush_cache_all();

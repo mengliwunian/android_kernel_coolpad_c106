@@ -30,6 +30,7 @@
 #include <sound/jack.h>
 #include "wcd-mbhc-v2.h"
 #include "wcdcal-hwdep.h"
+#include "msm8x16_wcd_registers.h"
 
 #define WCD_MBHC_JACK_MASK (SND_JACK_HEADSET | SND_JACK_OC_HPHL | \
 			   SND_JACK_OC_HPHR | SND_JACK_LINEOUT | \
@@ -50,7 +51,14 @@
 #define FAKE_REM_RETRY_ATTEMPTS 3
 #define MAX_IMPED 60000
 
+#define MAX_HEADSET_IMPED 50000
+#define ER_COMPATIBLE_HEADSET
 #define WCD_MBHC_BTN_PRESS_COMPL_TIMEOUT_MS  50
+#ifdef ER_COMPATIBLE_HEADSET
+static int is_eu_headset;
+static int button_status;
+module_param(button_status, int, 0444);
+#endif
 
 static int det_extn_cable_en;
 module_param(det_extn_cable_en, int,
@@ -67,6 +75,10 @@ enum wcd_mbhc_cs_mb_en_flag {
 static void wcd_mbhc_jack_report(struct wcd_mbhc *mbhc,
 				struct snd_soc_jack *jack, int status, int mask)
 {
+    #ifdef ER_COMPATIBLE_HEADSET
+	if (jack == &mbhc->button_jack)
+		button_status = status?1:0;
+    #endif
 	snd_soc_jack_report(jack, status, mask);
 }
 
@@ -256,8 +268,10 @@ static int wcd_event_notify(struct notifier_block *self, unsigned long val,
 			  mbhc->is_hs_recording);
 		break;
 	case WCD_EVENT_POST_MICBIAS_2_ON:
+		#ifndef ER_COMPATIBLE_HEADSET
 		if (!mbhc->micbias_enable)
 			goto out_micb_en;
+		#endif
 		if (mbhc->mbhc_cb->mbhc_common_micb_ctrl) {
 			mbhc->mbhc_cb->mbhc_common_micb_ctrl(codec,
 					MBHC_COMMON_MICB_PRECHARGE,
@@ -277,7 +291,10 @@ static int wcd_event_notify(struct notifier_block *self, unsigned long val,
 			mbhc->mbhc_cb->mbhc_common_micb_ctrl(codec,
 					MBHC_COMMON_MICB_PRECHARGE,
 					false);
+#ifndef ER_COMPATIBLE_HEADSET
 out_micb_en:
+#endif
+/*FERRARI-377 chenshuyun 20160510 end*/
 		/* Disable current source if micbias enabled */
 		if (mbhc->mbhc_cb->mbhc_micbias_control) {
 			WCD_MBHC_REG_READ(WCD_MBHC_FSM_EN, fsm_en);
@@ -486,6 +503,9 @@ static void wcd_mbhc_set_and_turnoff_hph_padac(struct wcd_mbhc *mbhc)
 {
 	u8 wg_time;
 
+	u8 reg1, reg2, reg3;
+	struct snd_soc_codec *codec = mbhc->codec;
+	pr_debug("%s go into wcd_mbhc_set_and_turnoff_hph_padac\n", __func__);
 	WCD_MBHC_REG_READ(WCD_MBHC_HPH_CNP_WG_TIME, wg_time);
 	wg_time += 1;
 
@@ -498,7 +518,16 @@ static void wcd_mbhc_set_and_turnoff_hph_padac(struct wcd_mbhc *mbhc)
 	} else {
 		pr_debug("%s PA is off\n", __func__);
 	}
-	WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_HPH_PA_EN, 0);
+	reg1 = snd_soc_read(codec, MSM8X16_WCD_A_CDC_CONN_RX1_B1_CTL);
+	reg2 = snd_soc_read(codec, MSM8X16_WCD_A_CDC_CONN_RX2_B1_CTL);
+	reg3 = snd_soc_read(codec, MSM8X16_WCD_A_ANALOG_TX_1_EN);
+	if ((reg1 | reg2) && (reg3 & 0x80))
+		pr_err("%s does nothing \n", __func__);
+	else
+		snd_soc_update_bits(codec, MSM8X16_WCD_A_ANALOG_RX_HPH_CNP_EN,
+		0x30, 0x00);
+	/* original csy delete
+	WCD_MBHC_REG_UPDATE_BITS(WCD_MBHC_HPH_PA_EN, 0); */
 	usleep_range(wg_time * 1000, wg_time * 1000 + 50);
 }
 
@@ -517,6 +546,9 @@ int wcd_mbhc_get_impedance(struct wcd_mbhc *mbhc, uint32_t *zl,
 static void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 				enum snd_jack_types jack_type)
 {
+#ifdef ER_COMPATIBLE_HEADSET
+	u32 hph_status = 0;
+#endif
 	WCD_MBHC_RSC_ASSERT_LOCKED(mbhc);
 
 	pr_debug("%s: enter insertion %d hph_status %x\n",
@@ -524,6 +556,13 @@ static void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 	if (!insertion) {
 		/* Report removal */
 		mbhc->hph_status &= ~jack_type;
+#ifdef ER_COMPATIBLE_HEADSET
+hph_status = mbhc->hph_status;
+if (jack_type == SND_JACK_HEADSET && is_eu_headset) {
+	hph_status &= ~SND_JACK_UNSUPPORTED;
+	is_eu_headset = 0;
+}
+#endif
 		/*
 		 * cancel possibly scheduled btn work and
 		 * report release if we reported button press
@@ -555,8 +594,13 @@ static void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 		mbhc->zl = mbhc->zr = 0;
 		pr_debug("%s: Reporting removal %d(%x)\n", __func__,
 			 jack_type, mbhc->hph_status);
+#ifdef ER_COMPATIBLE_HEADSET
+		wcd_mbhc_jack_report(mbhc, &mbhc->headset_jack,
+				hph_status, WCD_MBHC_JACK_MASK);
+#else
 		wcd_mbhc_jack_report(mbhc, &mbhc->headset_jack,
 				mbhc->hph_status, WCD_MBHC_JACK_MASK);
+#endif
 		wcd_mbhc_set_and_turnoff_hph_padac(mbhc);
 		hphrocp_off_report(mbhc, SND_JACK_OC_HPHR);
 		hphlocp_off_report(mbhc, SND_JACK_OC_HPHL);
@@ -654,11 +698,22 @@ static void wcd_mbhc_report_plug(struct wcd_mbhc *mbhc, int insertion,
 
 		mbhc->hph_status |= jack_type;
 
+#ifdef ER_COMPATIBLE_HEADSET
+hph_status = mbhc->hph_status;
+if (jack_type == SND_JACK_HEADSET &&  is_eu_headset)
+	hph_status |= SND_JACK_UNSUPPORTED;
+#endif
 		pr_debug("%s: Reporting insertion %d(%x)\n", __func__,
 			 jack_type, mbhc->hph_status);
+#ifdef ER_COMPATIBLE_HEADSET
+		wcd_mbhc_jack_report(mbhc, &mbhc->headset_jack,
+				    (hph_status),
+				    WCD_MBHC_JACK_MASK);
+#else
 		wcd_mbhc_jack_report(mbhc, &mbhc->headset_jack,
 				    (mbhc->hph_status | SND_JACK_MECHANICAL),
 				    WCD_MBHC_JACK_MASK);
+#endif
 		wcd_mbhc_clr_and_turnon_hph_padac(mbhc);
 	}
 	pr_debug("%s: leave hph_status %x\n", __func__, mbhc->hph_status);
@@ -672,10 +727,17 @@ static void wcd_mbhc_find_plug_and_report(struct wcd_mbhc *mbhc,
 
 	WCD_MBHC_RSC_ASSERT_LOCKED(mbhc);
 
+	#ifdef ER_COMPATIBLE_HEADSET
+		if ((mbhc->current_plug == plug_type) && (!is_eu_headset)) {
+			pr_debug("%s: cable already reported,exit\n", __func__);
+			goto exit;
+		}
+	#else
 	if (mbhc->current_plug == plug_type) {
 		pr_debug("%s: cable already reported, exit\n", __func__);
 		goto exit;
 	}
+	#endif
 
 	if (plug_type == MBHC_PLUG_TYPE_HEADPHONE) {
 		/*
@@ -1059,7 +1121,19 @@ correct_plug_type:
 					 */
 					pr_debug("%s: switch didnt work\n",
 						  __func__);
+					#ifdef ER_COMPATIBLE_HEADSET
+					plug_type = MBHC_PLUG_TYPE_HEADSET;
+					is_eu_headset = 1;
+				mbhc->mbhc_cb->compute_impedance(mbhc,
+						&mbhc->zl, &mbhc->zr);
+				if (mbhc->zl > MAX_HEADSET_IMPED ||
+					mbhc->zr > MAX_HEADSET_IMPED) {
+					plug_type = MBHC_PLUG_TYPE_HEADSET;
+					is_eu_headset = 0;
+				}
+					#else
 					plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
+					#endif
 					goto report;
 				} else {
 					plug_type = MBHC_PLUG_TYPE_GND_MIC_SWAP;
@@ -1145,6 +1219,10 @@ report:
 	pr_debug("%s: Valid plug found, plug type %d wrk_cmpt %d btn_intr %d\n",
 			__func__, plug_type, wrk_complete,
 			mbhc->btn_press_intr);
+	#ifdef ER_COMPATIBLE_HEADSET
+	if (plug_type == MBHC_PLUG_TYPE_HIGH_HPH)
+		plug_type = MBHC_PLUG_TYPE_HEADSET;
+	#endif
 	WCD_MBHC_RSC_LOCK(mbhc);
 	wcd_mbhc_find_plug_and_report(mbhc, plug_type);
 	WCD_MBHC_RSC_UNLOCK(mbhc);
@@ -1254,6 +1332,9 @@ static void wcd_mbhc_swch_irq_handler(struct wcd_mbhc *mbhc)
 
 	if ((mbhc->current_plug == MBHC_PLUG_TYPE_NONE) &&
 	    detection_type) {
+		#ifdef ER_COMPATIBLE_HEADSET
+		is_eu_headset = 0;
+		#endif
 		/* Make sure MASTER_BIAS_CTL is enabled */
 		mbhc->mbhc_cb->mbhc_bias(codec, true);
 

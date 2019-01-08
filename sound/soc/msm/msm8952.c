@@ -20,6 +20,8 @@
 #include <linux/module.h>
 #include <linux/workqueue.h>
 #include <linux/input.h>
+#include <linux/proc_fs.h>
+#include <linux/bootreason.h>
 #include <sound/core.h>
 #include <sound/soc.h>
 #include <sound/soc-dapm.h>
@@ -71,6 +73,7 @@ static atomic_t auxpcm_mi2s_clk_ref;
 
 static int msm8952_enable_dig_cdc_clk(struct snd_soc_codec *codec, int enable,
 					bool dapm);
+static int add_hardware_proc_entry(void);
 static bool msm8952_swap_gnd_mic(struct snd_soc_codec *codec);
 static int msm8952_mclk_event(struct snd_soc_dapm_widget *w,
 			      struct snd_kcontrol *kcontrol, int event);
@@ -90,11 +93,11 @@ static struct wcd_mbhc_config mbhc_cfg = {
 	.detect_extn_cable = true,
 	.mono_stero_detection = false,
 	.swap_gnd_mic = NULL,
-	.hs_ext_micbias = false,
+	.hs_ext_micbias = true,
 	.key_code[0] = KEY_MEDIA,
-	.key_code[1] = KEY_VOICECOMMAND,
-	.key_code[2] = KEY_VOLUMEUP,
-	.key_code[3] = KEY_VOLUMEDOWN,
+	.key_code[1] = KEY_VOLUMEUP,
+	.key_code[2] = KEY_VOLUMEDOWN,
+	.key_code[3] = 0,
 	.key_code[4] = 0,
 	.key_code[5] = 0,
 	.key_code[6] = 0,
@@ -310,6 +313,22 @@ static int enable_spk_ext_pa(struct snd_soc_codec *codec, int enable)
 					__func__, "ext_spk_gpio");
 			return ret;
 		}
+		/*1 PWM*/
+		gpio_set_value_cansleep(pdata->spk_ext_pa_gpio, enable);
+		udelay(2);
+		gpio_set_value_cansleep(pdata->spk_ext_pa_gpio, 0);
+		udelay(2);
+		/*2 PWM*/
+		gpio_set_value_cansleep(pdata->spk_ext_pa_gpio, enable);
+		udelay(2);
+		gpio_set_value_cansleep(pdata->spk_ext_pa_gpio, 0);
+		udelay(2);
+		/*3 PWM*/
+		gpio_set_value_cansleep(pdata->spk_ext_pa_gpio, enable);
+		udelay(2);
+		gpio_set_value_cansleep(pdata->spk_ext_pa_gpio, 0);
+		udelay(2);
+		/*4 for high*/
 		gpio_set_value_cansleep(pdata->spk_ext_pa_gpio, enable);
 
 		/* Some devices have secondary GPIO that needs to set */
@@ -1508,7 +1527,7 @@ static void *def_msm8952_wcd_mbhc_cal(void)
 	}
 
 #define S(X, Y) ((WCD_MBHC_CAL_PLUG_TYPE_PTR(msm8952_wcd_cal)->X) = (Y))
-	S(v_hs_max, 1500);
+	S(v_hs_max, 1700);
 #undef S
 #define S(X, Y) ((WCD_MBHC_CAL_BTN_DET_PTR(msm8952_wcd_cal)->X) = (Y))
 	S(num_btn, WCD_MBHC_DEF_BUTTONS);
@@ -1531,16 +1550,16 @@ static void *def_msm8952_wcd_mbhc_cal(void)
 	 * 210-290 == Button 2
 	 * 360-680 == Button 3
 	 */
-	btn_low[0] = 75;
-	btn_high[0] = 75;
-	btn_low[1] = 150;
-	btn_high[1] = 150;
-	btn_low[2] = 225;
-	btn_high[2] = 225;
+	btn_low[0] = 100;
+	btn_high[0] = 100;
+	btn_low[1] = 210;
+	btn_high[1] = 210;
+	btn_low[2] = 450;
+	btn_high[2] = 450;
 	btn_low[3] = 450;
 	btn_high[3] = 450;
-	btn_low[4] = 500;
-	btn_high[4] = 500;
+	btn_low[4] = 450;
+	btn_high[4] = 450;
 
 	return msm8952_wcd_cal;
 }
@@ -2486,6 +2505,49 @@ void msm8952_disable_mclk(struct work_struct *work)
 	mutex_unlock(&pdata->cdc_mclk_mutex);
 }
 
+/*add by qixuliang for external pa hardware version start*/
+static ssize_t hardware_version_entry_read(struct file *file,
+		char __user *buffer, size_t count, loff_t *offset)
+{
+	int hw_ver = yl_get_hardware_version();
+
+	if ((hw_ver&0x0f) > 4) {  /*for C106*/
+		if (copy_to_user(buffer, "1", 2))
+			return -EFAULT;
+	} else if (hw_ver&0x10) {  /*for C103*/
+		if (copy_to_user(buffer, "1", 2))
+			return -EFAULT;
+	} else {
+		if (copy_to_user(buffer, "0", 2))
+			return -EFAULT;
+	}
+
+	return count;
+}
+
+static const struct file_operations hardware_version_operations = {
+	.owner = THIS_MODULE,
+	.read = hardware_version_entry_read,
+};
+
+static int add_hardware_proc_entry(void)
+{
+	struct proc_dir_entry *p = NULL;
+	struct proc_dir_entry *proc_file = NULL;
+
+	p = proc_mkdir("hardware", NULL);
+	if (p == NULL)
+		return -ENOMEM;
+
+	proc_file = proc_create("ext_pa_status", 0444, p,
+				&hardware_version_operations);
+	if (proc_file == NULL)
+		return -ENOMEM;
+
+	return 0;
+}
+/*add by qixuliang for external pa hardware version end*/
+
 static bool msm8952_swap_gnd_mic(struct snd_soc_codec *codec)
 {
 	struct snd_soc_card *card = codec->card;
@@ -2987,6 +3049,7 @@ static int msm8952_asoc_machine_probe(struct platform_device *pdev)
 			ret);
 		goto err;
 	}
+	add_hardware_proc_entry();
 	return 0;
 err:
 	if (pdata->vaddr_gpio_mux_spkr_ctl)

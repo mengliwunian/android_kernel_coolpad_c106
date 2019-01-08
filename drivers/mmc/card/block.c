@@ -46,6 +46,9 @@
 #include <linux/mmc/host.h>
 #include <linux/mmc/mmc.h>
 #include <linux/mmc/sd.h>
+#ifdef CONFIG_MMC_YL_PARAMS
+#include <linux/yl_params.h>
+#endif
 
 #include <asm/uaccess.h>
 
@@ -133,6 +136,7 @@ struct mmc_blk_data {
 #define MMC_BLK_DISCARD		BIT(2)
 #define MMC_BLK_SECDISCARD	BIT(3)
 #define MMC_BLK_FLUSH		BIT(4)
+#define MMC_BLK_PARTSWITCH	BIT(5)
 
 
 	/*
@@ -178,6 +182,31 @@ static inline void mmc_blk_clear_packed(struct mmc_queue_req *mqrq)
 	packed->retries = 0;
 	packed->blocks = 0;
 }
+
+#ifdef CONFIG_MMC_YL_PARAMS
+extern int  yl_params_init(struct mmc_card *card);
+
+int yl_cmdq_switch(struct mmc_card *card, bool enable)
+{
+	struct mmc_blk_data *md;
+
+	int ret = 0;
+	md = mmc_get_drvdata(card);
+	if (false == enable) {
+		pr_err("mmc yl params operate exit cmdq!\n");
+		ret = mmc_blk_cmdq_switch(card, md, 0);
+	} else {
+		pr_err("mmc  yl params operate enter cmdq!\n");
+		ret = mmc_blk_cmdq_switch(card, md, 1);
+		if (0 == ret)
+			WARN_ON(mmc_cmdq_halt(card->host, false));
+		else
+			pr_err("mmc yl params operate enter cmdq err!\n");
+	}
+	return ret;
+}
+
+#endif
 
 static struct mmc_blk_data *mmc_blk_get(struct gendisk *disk)
 {
@@ -1122,8 +1151,13 @@ static inline int mmc_blk_part_switch(struct mmc_card *card,
 		ret = mmc_switch(card, EXT_CSD_CMD_SET_NORMAL,
 				 EXT_CSD_PART_CONFIG, part_config,
 				 card->ext_csd.part_time);
-		if (ret)
+
+		if (ret) {
+			pr_err("%s: mmc_blk_part_switch failure, %d -> %d\n",
+				mmc_hostname(card->host), main_md->part_curr,
+					md->part_type);
 			return ret;
+		}
 
 		card->ext_csd.part_config = part_config;
 		card->part_curr = md->part_type;
@@ -3698,6 +3732,7 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 	struct mmc_host *host = card->host;
 	unsigned long flags;
 	unsigned int cmd_flags = req ? req->cmd_flags : 0;
+	int err;
 
 	if (req && !mq->mqrq_prev->req) {
 		mmc_rpm_hold(host, &card->dev);
@@ -3712,7 +3747,17 @@ static int mmc_blk_issue_rq(struct mmc_queue *mq, struct request *req)
 	}
 
 	ret = mmc_blk_part_switch(card, md);
+
 	if (ret) {
+		err = mmc_blk_reset(md, card->host, MMC_BLK_PARTSWITCH);
+		if (!err) {
+			pr_err("%s: mmc_blk_reset(MMC_BLK_PARTSWITCH) succeeded.\n",
+					mmc_hostname(host));
+			mmc_blk_reset_success(md, MMC_BLK_PARTSWITCH);
+		} else
+			pr_err("%s: mmc_blk_reset(MMC_BLK_PARTSWITCH) failed.\n",
+				mmc_hostname(host));
+
 		if (req) {
 			blk_end_request_all(req, -EIO);
 		}
@@ -4236,6 +4281,12 @@ static int mmc_blk_probe(struct mmc_card *card)
 	mmc_set_bus_resume_policy(card->host, 1);
 	pr_debug("%s: enabling deferred resume !!!\n",
 			mmc_hostname(card->host));
+#endif
+#ifdef CONFIG_MMC_YL_PARAMS
+	if (strcmp(md->disk->disk_name, "mmcblk0") == 0) {
+		yl_params_init(card);
+		pr_info("call yl_params_init!\n");
+	}
 #endif
 	if (mmc_add_disk(md))
 		goto out;

@@ -1657,6 +1657,10 @@ static uint32_t get_mask_from_core_handle(struct platform_device *pdev,
 	return mask;
 }
 
+#ifdef CONFIG_YL_FEATURE_CHARGE
+extern bool poweroff_charge;
+#endif
+
 static int bcl_probe(struct platform_device *pdev)
 {
 	struct bcl_context *bcl = NULL;
@@ -1671,6 +1675,12 @@ static int bcl_probe(struct platform_device *pdev)
 		return -ENOMEM;
 	}
 
+#ifdef CONFIG_YL_FEATURE_CHARGE
+	if (poweroff_charge) {
+		pr_err("power off charger mode, don't need bcl!\n");
+		return -ENOMEM;
+	}
+#endif
 	/* For BCL */
 	/* Init default BCL params */
 	if (of_property_read_bool(pdev->dev.of_node, "qcom,bcl-enable"))

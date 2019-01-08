@@ -325,6 +325,57 @@ static int qpnp_vib_parse_dt(struct qpnp_vib *vib)
 	return 0;
 }
 
+#define LEVEL_STEP	((QPNP_VIB_MAX_LEVEL-QPNP_VIB_MIN_LEVEL)/3)
+#define LOW_LEVEL	QPNP_VIB_MIN_LEVEL
+#define MEDIUM_LEVEL	(LOW_LEVEL+LEVEL_STEP)
+#define HIGH_LEVEL	(MEDIUM_LEVEL+LEVEL_STEP)
+#define SUP_HIGHT_LEVEL  QPNP_VIB_MAX_LEVEL
+
+static ssize_t level_store(struct device *dev, struct device_attribute *attr,
+		const char *buf, size_t size)
+{
+	struct timed_output_dev *tdev = dev_get_drvdata(dev);
+	struct qpnp_vib *vib = container_of(tdev, struct qpnp_vib,
+							 timed_dev);
+	int level;
+	u8 reg = 0;
+
+	if (sscanf(buf, "%d", &level) != 1)
+		return -EINVAL;
+	if (level > SUP_HIGHT_LEVEL)
+		level = SUP_HIGHT_LEVEL;
+	else if (level > HIGH_LEVEL)
+		level = HIGH_LEVEL;
+	else if (level > MEDIUM_LEVEL)
+		level = MEDIUM_LEVEL;
+	else if (level > 0)
+		level = LOW_LEVEL;
+	else
+		level = 0;
+	vib->vtg_level = level;
+
+	/* Configure the VTG CTL regiser */
+	qpnp_vib_read_u8(vib, &reg, QPNP_VIB_VTG_CTL(vib->base));
+	reg &= ~QPNP_VIB_VTG_SET_MASK;
+	reg |= (vib->vtg_level & QPNP_VIB_VTG_SET_MASK);
+	qpnp_vib_write_u8(vib, &reg, QPNP_VIB_VTG_CTL(vib->base));
+
+	pr_info("%s:set vib level is %d\n", __func__, level);
+	return size;
+}
+
+static ssize_t level_show(struct device *dev, struct device_attribute *attr,
+		char *buf)
+{
+	struct timed_output_dev *tdev = dev_get_drvdata(dev);
+	struct qpnp_vib *vib = container_of(tdev, struct qpnp_vib,
+							timed_dev);
+	return snprintf(buf, PAGE_SIZE, "%d\n", vib->vtg_level);
+}
+
+
+static DEVICE_ATTR(level, S_IRUGO | S_IWUSR, level_show, level_store);
+
 static int qpnp_vibrator_probe(struct spmi_device *spmi)
 {
 	struct qpnp_vib *vib;
@@ -372,6 +423,9 @@ static int qpnp_vibrator_probe(struct spmi_device *spmi)
 	if (rc < 0)
 		return rc;
 
+	rc = device_create_file(vib->timed_dev.dev, &dev_attr_level);
+	if (rc < 0)
+		timed_output_dev_unregister(&vib->timed_dev);
 	return rc;
 }
 
@@ -381,6 +435,7 @@ static int qpnp_vibrator_remove(struct spmi_device *spmi)
 
 	cancel_work_sync(&vib->work);
 	hrtimer_cancel(&vib->vib_timer);
+	device_remove_file(vib->timed_dev.dev, &dev_attr_level);
 	timed_output_dev_unregister(&vib->timed_dev);
 	mutex_destroy(&vib->lock);
 

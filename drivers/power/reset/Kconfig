@@ -52,3 +52,8 @@ config POWER_RESET_VEXPRESS
 	help
 	  Power off and reset support for the ARM Ltd. Versatile
 	  Express boards.
+
+config SET_DLOAD_MODE_BY_PP_FLAG
+	bool "set dload mode by params patition flag"
+	help
+	  You can control dload mode by params partition flags.

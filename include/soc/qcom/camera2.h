@@ -159,6 +159,8 @@ struct msm_camera_sensor_board_info {
 	const char *misc_regulator;
 	struct msm_camera_power_ctrl_t power_info;
 	struct msm_camera_sensor_slave_info *cam_slave_info;
+	const char *sensor_module_info;
+	uint8_t sensor_gpio_id;
 };
 
 enum msm_camera_i2c_cmd_type {

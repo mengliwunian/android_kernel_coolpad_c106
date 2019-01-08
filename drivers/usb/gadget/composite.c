@@ -670,6 +670,9 @@ static int set_config(struct usb_composite_dev *cdev,
 	int			result = -EINVAL;
 	unsigned		power = gadget_is_otg(gadget) ? 8 : 100;
 	int			tmp;
+	int error = 0;
+
+	pr_debug("%s+\n", __func__);
 
 	/*
 	 * ignore 2nd time SET_CONFIGURATION
@@ -695,8 +698,10 @@ static int set_config(struct usb_composite_dev *cdev,
 				break;
 			}
 		}
-		if (result < 0)
+		if (result < 0) {
+			error = 1;
 			goto done;
+		}
 	} else { /* Zero configuration value - need to reset the config */
 		if (cdev->config)
 			reset_config(cdev);
@@ -707,8 +712,10 @@ static int set_config(struct usb_composite_dev *cdev,
 	     usb_speed_string(gadget->speed),
 	     number, c ? c->label : "unconfigured");
 
-	if (!c)
+	if (!c) {
+		pr_debug("usb:non configed power = %d\n", power);
 		goto done;
+	}
 
 	cdev->config = c;
 	c->num_ineps_used = 0;
@@ -785,6 +792,14 @@ static int set_config(struct usb_composite_dev *cdev,
 	power = c->MaxPower ? c->MaxPower : CONFIG_USB_GADGET_VBUS_DRAW;
 done:
 	usb_gadget_vbus_draw(gadget, power);
+
+	/* juzhitao add for a bug */
+	if (error == 1) {
+		pr_err("%s: error in config result = %d", __func__, result);
+		usb_gadget_vbus_draw(gadget, 500);
+		return 0;
+	}
+
 	if (result >= 0 && cdev->delayed_status)
 		result = USB_GADGET_DELAYED_STATUS;
 	return result;
@@ -1613,6 +1628,9 @@ unknown:
 
 done:
 	/* device either stalls (value < 0) or reports success */
+	if (value < 0)
+		pr_warn("usb: a error in %s value=%d\n", __func__, value);
+
 	return value;
 }
 

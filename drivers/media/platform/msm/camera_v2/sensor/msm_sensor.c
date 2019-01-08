@@ -21,6 +21,10 @@
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 
+unsigned char *buf_eeprom_w = NULL;
+unsigned char *buf_eeprom_r = NULL;
+#define EEPROM_CAL_TOTAL_NUM    206
+
 static struct v4l2_file_operations msm_sensor_v4l2_subdev_fops;
 static void msm_sensor_adjust_mclk(struct msm_camera_power_ctrl_t *ctrl)
 {
@@ -532,6 +536,113 @@ static uint16_t msm_sensor_id_by_mask(struct msm_sensor_ctrl_t *s_ctrl,
 	return sensor_id;
 }
 
+static int read_eeprom_from_file(void)
+{
+    struct file *fp;
+    mm_segment_t fs;
+    loff_t pos;
+    int i;
+    pr_err("%s:  enter ...\n",__func__);
+
+    fp = filp_open("/data/misc/camera/eepromwrite.dat",O_RDWR, 0644);
+    if (IS_ERR(fp)) {
+        pr_err("%s: open file failed%lx\n",__func__,IS_ERR(fp));
+    return -1;
+    }
+        if(buf_eeprom_r == NULL) {
+        buf_eeprom_r = kzalloc(EEPROM_CAL_TOTAL_NUM, GFP_KERNEL);
+        if (!buf_eeprom_r) {
+        pr_err("%s:%d no memory\n", __func__, __LINE__);
+        return -ENOMEM;
+       }
+    }
+    fs = get_fs();
+    set_fs(KERNEL_DS);
+    pos = 0;
+    vfs_read(fp, (char *)buf_eeprom_r, EEPROM_CAL_TOTAL_NUM, &pos);
+    filp_close(fp, NULL);
+    set_fs(fs);
+        for (i = 0; i < EEPROM_CAL_TOTAL_NUM; i++) {
+                        pr_err("[HARE]_read EEPROM0, Byte %d: 0x%x\n", i, (unsigned char)buf_eeprom_r[i]);
+                }
+    pr_err("%s:  leave ...\n",__func__);
+    return 0;
+}
+
+static int write_eeprom_to_sensor(struct msm_sensor_ctrl_t *s_ctrl)
+{
+        int rc;
+        uint16_t chipid = 0;
+        struct msm_camera_i2c_client *sensor_i2c_client;
+        struct msm_camera_slave_info *slave_info;
+        const char *sensor_name;
+        unsigned int addr = 0x1286;
+        unsigned int i;
+        uint16_t bak_sid;
+        uint16_t bak_retries;
+        uint16_t bak_id_map;
+        enum cci_i2c_master_t bak_cci_i2c_master;
+        struct msm_camera_cci_client *cci_client = NULL;
+    	
+	pr_err("%s:  enter ...\n",__func__);
+        if (!s_ctrl) {
+                pr_err("%s:%d failed: %p\n",
+                        __func__, __LINE__, s_ctrl);
+                return -EINVAL;
+        }
+
+        sensor_i2c_client = s_ctrl->sensor_i2c_client;
+        slave_info = s_ctrl->sensordata->slave_info;
+        sensor_name = s_ctrl->sensordata->sensor_name;
+
+        if (!sensor_i2c_client || !slave_info || !sensor_name) {
+                pr_err("%s:%d failed: %p %p %p\n",
+                        __func__, __LINE__, sensor_i2c_client, slave_info,
+                        sensor_name);
+                return -EINVAL;
+        }
+        rc = sensor_i2c_client->i2c_func_tbl->i2c_read(
+                sensor_i2c_client, slave_info->sensor_id_reg_addr,
+                &chipid, MSM_CAMERA_I2C_WORD_DATA);
+        if (rc < 0) {
+                pr_err("%s: %s: read id failed\n", __func__, sensor_name);
+                return rc;
+        }
+
+        pr_err("%s: read id: 0x%x expected id 0x%x:\n", __func__, chipid,
+                slave_info->sensor_id);
+        if (msm_sensor_id_by_mask(s_ctrl, chipid) != slave_info->sensor_id) {
+                pr_err("msm_sensor_match_id chip id doesnot match\n");
+                return -ENODEV;
+        }
+
+        cci_client = s_ctrl->sensor_i2c_client->cci_client;
+        bak_sid = cci_client->sid ;
+        bak_retries = cci_client->retries;
+        bak_id_map = cci_client->id_map;
+        bak_cci_i2c_master = cci_client->cci_i2c_master;
+
+        if (chipid == 0x0258) {
+		cci_client->sid = 0xA0 >> 1;
+		cci_client->retries = 3;
+		cci_client->id_map = 0;
+                cci_client->cci_i2c_master = s_ctrl->cci_i2c_master;
+
+                for(i=0;i<EEPROM_CAL_TOTAL_NUM;i++){
+                    s_ctrl->sensor_i2c_client->i2c_func_tbl->i2c_write(s_ctrl->sensor_i2c_client, addr++,
+                      (unsigned char)buf_eeprom_r[i], MSM_CAMERA_I2C_BYTE_DATA);
+                        pr_err("%s: enter %x   %x   %d\n", __func__, addr,buf_eeprom_r[i],i);
+                    mdelay(3);
+                }
+        }
+        kfree(buf_eeprom_r);
+        cci_client->sid = bak_sid;
+        cci_client->retries = bak_retries;
+        cci_client->id_map = bak_id_map;
+        cci_client->cci_i2c_master = bak_cci_i2c_master;
+        pr_err("%s:  leave ...\n",__func__);
+        return rc;
+}
 int msm_sensor_match_id(struct msm_sensor_ctrl_t *s_ctrl)
 {
 	int rc = 0;
@@ -539,6 +650,7 @@ int msm_sensor_match_id(struct msm_sensor_ctrl_t *s_ctrl)
 	struct msm_camera_i2c_client *sensor_i2c_client;
 	struct msm_camera_slave_info *slave_info;
 	const char *sensor_name;
+	int pin_cameraid_value = 0;
 
 	if (!s_ctrl) {
 		pr_err("%s:%d failed: %p\n",
@@ -569,6 +681,18 @@ int msm_sensor_match_id(struct msm_sensor_ctrl_t *s_ctrl)
 	if (msm_sensor_id_by_mask(s_ctrl, chipid) != slave_info->sensor_id) {
 		pr_err("msm_sensor_match_id chip id doesnot match\n");
 		return -ENODEV;
+	}
+	if(s_ctrl->sensordata->power_info.gpio_conf->gpio_num_info->gpio_num[SENSOR_GPIO_ID]){
+		pin_cameraid_value = gpio_get_value(s_ctrl->sensordata->power_info.gpio_conf->gpio_num_info->gpio_num[SENSOR_GPIO_ID]);
+		CDBG("get gpio camera id value :%d\n", pin_cameraid_value);
+		CDBG("get lib.c camera id value :%d\n", s_ctrl->sensordata->sensor_gpio_id);
+		if((0xff != s_ctrl->sensordata->sensor_gpio_id ) && (pin_cameraid_value != s_ctrl->sensordata->sensor_gpio_id) )
+		{
+			pr_err("msm_sensor_match_id  pin camerid doesnot match\n");
+			pr_err("gpio camera id value is %d\n",pin_cameraid_value);
+			pr_err("lib.c camera id value is %d\n",s_ctrl->sensordata->sensor_gpio_id);
+			return -ENODEV;
+		}
 	}
 	return rc;
 }
@@ -677,6 +801,8 @@ static int msm_sensor_config32(struct msm_sensor_ctrl_t *s_ctrl,
 	struct sensorb_cfg_data32 *cdata = (struct sensorb_cfg_data32 *)argp;
 	int32_t rc = 0;
 	int32_t i = 0;
+	int module_id = 0;
+
 	mutex_lock(s_ctrl->msm_sensor_mutex);
 	CDBG("%s:%d %s cfgtype = %d\n", __func__, __LINE__,
 		s_ctrl->sensordata->sensor_name, cdata->cfgtype);
@@ -809,6 +935,28 @@ static int msm_sensor_config32(struct msm_sensor_ctrl_t *s_ctrl,
 		kfree(reg_setting);
 		break;
 	}
+	case CFG_SET_MODULE_ID:
+		if (copy_from_user(&module_id,(void *)compat_ptr(cdata->cfg.setting),sizeof(uint32_t))) {
+                         pr_err("%s:%d failed\n", __func__, __LINE__);
+                          rc = -EFAULT;
+                          break;
+                  }
+		pr_err("YULONG:feiyc:%s module id 0x%x from vendor\n", __func__, module_id);
+                if(module_id)
+                        s_ctrl->module_id = module_id;
+                else
+                        s_ctrl->module_id = -1;
+                pr_err("YULONG:feiyc:%s module_id 0x%x\n", __func__, s_ctrl->module_id);
+                break;
+	case CFG_WRITE_EEPROM:
+                pr_err("YULONG:feiyc:%s write eeprom order form vendor\n", __func__);
+		rc = read_eeprom_from_file();
+                if (rc < 0) {
+                        pr_err("%s:%d: read_eeprom_from_file failed\n", __func__, __LINE__);
+                        break;
+                }
+		write_eeprom_to_sensor(s_ctrl);
+                break;
 	case CFG_SLAVE_READ_I2C: {
 		struct msm_camera_i2c_read_config read_config;
 		struct msm_camera_i2c_read_config *read_config_ptr = NULL;
@@ -1081,6 +1229,7 @@ int msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp)
 	struct sensorb_cfg_data *cdata = (struct sensorb_cfg_data *)argp;
 	int32_t rc = 0;
 	int32_t i = 0;
+	int32_t *module_id = NULL;
 	mutex_lock(s_ctrl->msm_sensor_mutex);
 	CDBG("%s:%d %s cfgtype = %d\n", __func__, __LINE__,
 		s_ctrl->sensordata->sensor_name, cdata->cfgtype);
@@ -1204,6 +1353,23 @@ int msm_sensor_config(struct msm_sensor_ctrl_t *s_ctrl, void __user *argp)
 		kfree(reg_setting);
 		break;
 	}
+	case CFG_SET_MODULE_ID:
+		module_id = (int*)cdata->cfg.setting;
+		if(module_id)
+			s_ctrl->module_id = *module_id;
+		else
+			s_ctrl->module_id = -1;
+		pr_err("YULONG:feiyc:%s module_id %d", __func__, s_ctrl->module_id);
+		break;
+	case CFG_WRITE_EEPROM:
+                pr_err("YULONG:feiyc:%s write eeprom order form vendor\n", __func__);
+                  rc = read_eeprom_from_file();
+                 if (rc < 0) {
+                         pr_err("%s:%d: read_eeprom_from_file failed\n", __func__, __LINE__);
+                         break;
+                 }
+                 write_eeprom_to_sensor(s_ctrl);
+                 break;
 	case CFG_SLAVE_READ_I2C: {
 		struct msm_camera_i2c_read_config read_config;
 		struct msm_camera_i2c_read_config *read_config_ptr = NULL;
@@ -1631,6 +1797,75 @@ static struct msm_camera_i2c_fn_t msm_sensor_qup_func_tbl = {
 	.i2c_write_table_sync_block = msm_camera_qup_i2c_write_table,
 };
 
+static ssize_t camerainfo_read(struct file *file, char __user *buff,
+			size_t count, loff_t *offp)
+{
+	struct miscdevice *cdn = (struct miscdevice *)file->private_data;
+	struct msm_sensor_ctrl_t *s_ctrl = container_of(cdn,
+		struct msm_sensor_ctrl_t, camerainfo_devnode);
+	char buf[128];
+	char sensor_name[10] = {0};
+	char *module_num_ptr = NULL;
+
+	if (!cdn) 
+	{
+		pr_err("%s No private_data\n", __func__);
+		return 0;
+	}
+	if ((*offp) != 0)
+		return 0;
+
+	pr_err("YULONG:feiyc:%s module_id %d", __func__, s_ctrl->module_id);
+
+	module_num_ptr = strnchr(s_ctrl->sensordata->sensor_name,
+				strlen(s_ctrl->sensordata->sensor_name), '_');
+	if (NULL != module_num_ptr) 
+	{
+            if(s_ctrl->sensordata->sensor_info->position == 0)
+	    {
+		strlcpy(sensor_name, (char *)s_ctrl->sensordata->sensor_name,
+			module_num_ptr - s_ctrl->sensordata->sensor_name + 1);
+		snprintf(buf, sizeof(buf), "%s %s+%s_mono %s", "1",
+			sensor_name, sensor_name,"QTech");
+	    }
+	    else if(s_ctrl->sensordata->sensor_info->position == 1)
+	   {
+	       strlcpy(sensor_name, (char *)s_ctrl->sensordata->sensor_name,
+			module_num_ptr - s_ctrl->sensordata->sensor_name + 1);
+		snprintf(buf, sizeof(buf), "%s %s %s\n", "1",sensor_name,"Ofilm");
+	    }
+	} 
+	else 
+	{
+	     if(s_ctrl->sensordata->sensor_info->position == 0)
+	     {
+		 snprintf(buf, sizeof(buf), "%s %s+%s_mono %s\n", "1",
+			s_ctrl->sensordata->sensor_name,s_ctrl->sensordata->sensor_name,"QTech");
+	     }
+	    else if(s_ctrl->sensordata->sensor_info->position == 1)
+	    {
+	         snprintf(buf, sizeof(buf), "%s %s %s\n", "1",s_ctrl->sensordata->sensor_name,"Ofilm");
+	    }
+	}
+	 return simple_read_from_buffer(buff, count, offp, buf, strlen(buf));
+}
+
+static int camerainfo_open(struct inode *inode, struct file *file)
+{
+	struct miscdevice *cdn = (struct miscdevice *)file->private_data;
+	struct msm_sensor_ctrl_t *s_ctrl = container_of(cdn,
+		struct msm_sensor_ctrl_t, camerainfo_devnode);
+	pr_err("%s %p %p\n", __func__, cdn, s_ctrl);
+	return 0;
+}
+
+static const struct file_operations camerainfo_fops = 
+{
+	.owner          = THIS_MODULE,
+	.open           = camerainfo_open,
+	.read           = camerainfo_read,
+};
+
 int32_t msm_sensor_platform_probe(struct platform_device *pdev,
 				  const void *data)
 {
@@ -1731,6 +1966,15 @@ int32_t msm_sensor_platform_probe(struct platform_device *pdev,
 
 	s_ctrl->func_tbl->sensor_power_down(s_ctrl);
 	CDBG("%s:%d\n", __func__, __LINE__);
+	
+	s_ctrl->camerainfo_devnode.minor = MISC_DYNAMIC_MINOR;
+	if (s_ctrl->sensordata->sensor_info->position == 0)
+		s_ctrl->camerainfo_devnode.name = "camera0";
+	else if(s_ctrl->sensordata->sensor_info->position == 1)
+		s_ctrl->camerainfo_devnode.name = "camera1";
+	s_ctrl->camerainfo_devnode.fops = &camerainfo_fops;
+	misc_register(&s_ctrl->camerainfo_devnode);
+	
 	return rc;
 }
 

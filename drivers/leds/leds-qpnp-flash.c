@@ -1012,7 +1012,7 @@ static void qpnp_flash_led_work(struct work_struct *work)
 	u8 val;
 
 	mutex_lock(&led->flash_led_lock);
-
+       printk("QPNP_FLASHLIGHT_LED_WORK START\n");
 	if (!brightness)
 		goto turn_off;
 
@@ -1470,6 +1470,7 @@ static void qpnp_flash_led_work(struct work_struct *work)
 
 	flash_node->flash_on = true;
 	mutex_unlock(&led->flash_led_lock);
+       printk("QPNP_FLASHLIGHT_LED_WORK TURN ON  END\n");
 
 	return;
 
@@ -1485,7 +1486,7 @@ turn_off:
 		dev_err(&led->spmi_dev->dev, "Strobe disable failed\n");
 		goto exit_flash_led_work;
 	}
-
+        printk("QPNP_FLASHLIGHT_LED_WORK TURN OFF END\n");
 	usleep(FLASH_RAMP_DN_DELAY_US);
 exit_flash_hdrm_sns:
 	if (led->pdata->hdrm_sns_ch0_en) {
@@ -1550,7 +1551,7 @@ static void qpnp_flash_led_brightness_set(struct led_classdev *led_cdev,
 		pr_err("Invalid brightness value\n");
 		return;
 	}
-
+        printk("FLASHLIGHT_LED_BRIGHTNESS_SET START\n");
 	if (value > flash_node->cdev.max_brightness)
 		value = flash_node->cdev.max_brightness;
 
@@ -1569,9 +1570,10 @@ static void qpnp_flash_led_brightness_set(struct led_classdev *led_cdev,
 					 flash_node->id == FLASH_LED_1) {
 			if (value < FLASH_LED_MIN_CURRENT_MA && value != 0)
 				value = FLASH_LED_MIN_CURRENT_MA;
-
+                      printk("SELECT FLASHLIGHT%d\n",flash_node->id);
 			flash_node->prgm_current = value;
 			flash_node->flash_on = value ? true : false;
+			printk("FLASHLIGHT SWITCH VALUE = %d\n",flash_node->flash_on);
 			if (value)
 				led->flash_node[led->num_leds - 1].trigger |=
 						(0x80 >> flash_node->id);
@@ -1584,8 +1586,7 @@ static void qpnp_flash_led_brightness_set(struct led_classdev *led_cdev,
 				prgm_current = flash_node->prgm_current;
 			else if (flash_node->id == FLASH_LED_1)
 				led->flash_node[led->num_leds - 1].
-				prgm_current2 =
-				flash_node->prgm_current;
+				prgm_current2 =flash_node->prgm_current;
 
 			return;
 		} else if (flash_node->id == FLASH_LED_SWITCH) {
@@ -1593,15 +1594,16 @@ static void qpnp_flash_led_brightness_set(struct led_classdev *led_cdev,
 				flash_node->prgm_current = 0;
 				flash_node->prgm_current2 = 0;
 			}
+			 printk("SET FLASHLIGHT_SWITCH\n");
 		}
 	} else {
 		if (value < FLASH_LED_MIN_CURRENT_MA && value != 0)
 			value = FLASH_LED_MIN_CURRENT_MA;
 		flash_node->prgm_current = value;
+		printk("SET FLASHLIGHT CURRENT\n");
 	}
-
 	queue_work(led->ordered_workq, &flash_node->work);
-
+        printk("FLASHLIGHT_LED_BRIGHTNESS_SET END\n");
 	return;
 }
 

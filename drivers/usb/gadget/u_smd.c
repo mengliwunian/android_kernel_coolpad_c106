@@ -38,7 +38,7 @@
 
 static struct workqueue_struct *gsmd_wq;
 
-#define SMD_N_PORTS	2
+#define SMD_N_PORTS	3
 #define CH_OPENED	0
 #define CH_READY	1
 struct smd_port_info {
@@ -51,6 +51,11 @@ struct smd_port_info smd_pi[SMD_N_PORTS] = {
 	{
 		.name = "DS",
 	},
+
+	{
+		.name = "DATA4",
+	},
+
 	{
 		.name = "UNUSED",
 	},

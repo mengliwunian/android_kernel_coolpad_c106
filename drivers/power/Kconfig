@@ -564,6 +564,33 @@ config MSM_BCL_PERIPHERAL_CTL
 	  provides routines to configure and monitor the BCL
 	  PMIC peripheral.
 
+config YL_CHARGE_MODE
+	bool "select for fast or normal charging"
+	default n
+	help
+	  Say Y to enable charge mode.
+
+config YL_5V_CHG
+	bool "select for 5V charger"
+	default n
+	help
+		Say Y to enable 5V charger only
+
+config YL_FEATURE_CHARGE
+	bool "select for call & light panel to limit charge current"
+        default n
+	help
+          Say Y to enable limit charge current when phone is call or light.
+
+config YL_CHARGER_PROPERTY
+	bool "charger neeed other PSY property to report"
+	default n
+	help
+	  Say Y to enable support for other PSY property.
+	  Say N to disable support for other PSY property.
+	  This driver provide interface for alarm and wakelock,
+	  report battery status to uplayer.
+
 source "drivers/power/reset/Kconfig"
 
 endif # POWER_SUPPLY

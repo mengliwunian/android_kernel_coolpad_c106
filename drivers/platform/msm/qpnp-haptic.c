@@ -327,6 +327,9 @@ struct qpnp_hap {
 	bool sup_brake_pat;
 	bool correct_lra_drive_freq;
 	bool misc_trim_error_rc19p2_clk_reg_present;
+#ifdef CONFIG_YL_SET_VOLTAGE_LEVEL
+	unsigned int level;
+#endif
 };
 
 static struct qpnp_hap *ghap;
@@ -1563,6 +1566,36 @@ static void qpnp_hap_td_enable(struct timed_output_dev *dev, int value)
 	schedule_work(&hap->work);
 }
 
+#ifdef CONFIG_YL_SET_VOLTAGE_LEVEL
+static void qpnp_hap_set_level(struct timed_output_dev *dev, int level)
+{
+	struct qpnp_hap *hap = container_of(dev, struct qpnp_hap, timed_dev);
+	u32 set_vmax;
+	unsigned int set_level;
+	int rc;
+
+	if (0 >= level && level > 100)
+		set_level = 75;
+	else
+		set_level = level;
+
+	set_vmax = (set_level/25-1)*400 + 2400;
+	hap->vmax_mv = set_vmax;
+	hap->level = set_level;
+	rc = qpnp_hap_vmax_config(hap);
+
+	if (rc)
+		return;
+}
+
+static  int qpnp_hap_get_level(struct timed_output_dev *dev)
+{
+	struct qpnp_hap *hap = container_of(dev, struct qpnp_hap, timed_dev);
+
+	return hap->level;
+}
+#endif
+
 /* play pwm bytes */
 int qpnp_hap_play_byte(u8 data, bool on)
 {
@@ -1711,7 +1744,12 @@ static int qpnp_hap_config(struct qpnp_hap *hap)
 		return rc;
 
 	/* Configure auto resonance parameters */
+#ifdef CONFIG_YL_SET_VOLTAGE_LEVEL
+	if (0) {
+#else
 	if (hap->act_type == QPNP_HAP_LRA) {
+#endif
+
 		if (hap->lra_res_cal_period < QPNP_HAP_RES_CAL_PERIOD_MIN)
 			hap->lra_res_cal_period = QPNP_HAP_RES_CAL_PERIOD_MIN;
 		else if (hap->lra_res_cal_period > QPNP_HAP_RES_CAL_PERIOD_MAX)
@@ -1974,7 +2012,11 @@ static int qpnp_hap_parse_dt(struct qpnp_hap *hap)
 		return rc;
 	}
 
+#ifdef CONFIG_YL_SET_VOLTAGE_LEVEL
+	if (0) {
+#else
 	if (hap->act_type == QPNP_HAP_LRA) {
+#endif
 		hap->auto_res_mode = QPNP_HAP_AUTO_RES_ZXD_EOP;
 		rc = of_property_read_string(spmi->dev.of_node,
 				"qcom,lra-auto-res-mode", &temp_str);
@@ -2205,6 +2247,10 @@ static int qpnp_haptic_probe(struct spmi_device *spmi)
 	hap->timed_dev.name = "vibrator";
 	hap->timed_dev.get_time = qpnp_hap_get_time;
 	hap->timed_dev.enable = qpnp_hap_td_enable;
+#ifdef CONFIG_YL_SET_VOLTAGE_LEVEL
+	hap->timed_dev.set_level = qpnp_hap_set_level;
+	hap->timed_dev.get_level = qpnp_hap_get_level;
+#endif
 
 	if (hap->act_type == QPNP_HAP_LRA && hap->correct_lra_drive_freq) {
 		INIT_WORK(&hap->auto_res_err_work, correct_auto_res_error);

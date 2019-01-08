@@ -43,6 +43,15 @@
 #define PMIC8941_V2_REV4	0x02
 #define PON_REV2_VALUE		0x00
 
+#ifdef CONFIG_PM_SLEEP
+#ifdef CONFIG_CREATE_NODE
+#include <linux/createnode.h>
+#include <linux/irq.h>
+#define DOWN_KEY_SEQ 1
+#define DOWN_KEY_CODE 114
+#endif
+#endif
+
 /* Common PNP defines */
 #define QPNP_PON_REVISION2(base)		(base + 0x01)
 
@@ -277,7 +286,7 @@ int qpnp_pon_set_restart_reason(enum pon_restart_reason reason)
 	if (!pon)
 		return 0;
 
-	if (!pon->store_hard_reset_reason)
+	if (!pon->store_hard_reset_reason  && (reason != PON_RESTART_REASON_PANIC))
 		return 0;
 
 	rc = qpnp_pon_masked_write(pon, QPNP_PON_SOFT_RB_SPARE(pon->base),
@@ -663,6 +672,7 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 
 	pr_debug("PMIC input: code=%d, sts=0x%hhx\n",
 					cfg->key_code, pon_rt_sts);
+	printk("input_report_key key_code=%d key_value=%d\n", cfg->key_code, pon_rt_sts & pon_rt_bit);
 	key_status = pon_rt_sts & pon_rt_bit;
 
 	/* simulate press event in case release event occured
@@ -673,6 +683,7 @@ qpnp_pon_input_dispatch(struct qpnp_pon *pon, u32 pon_type)
 		input_sync(pon->pon_input);
 	}
 
+	printk(KERN_ERR "%s,key code:%u\n", __func__, cfg->key_code);
 	input_report_key(pon->pon_input, cfg->key_code, key_status);
 	input_sync(pon->pon_input);
 
@@ -1049,6 +1060,9 @@ qpnp_pon_request_irqs(struct qpnp_pon *pon, struct qpnp_pon_config *cfg)
 
 	/* mark the interrupts wakeable if they support linux-key */
 	if (cfg->key_code) {
+#ifdef CONFIG_CREATE_NODE
+		if (cfg->key_code != DOWN_KEY_CODE)
+#endif
 		enable_irq_wake(cfg->state_irq);
 		/* special handling for RESIN due to a hardware bug */
 		if (cfg->pon_type == PON_RESIN && cfg->support_reset)
@@ -1713,6 +1727,9 @@ static void qpnp_pon_debugfs_remove(struct spmi_device *spmi)
 {}
 #endif
 
+#ifdef CONFIG_CREATE_NODE
+static bool has_enable_wake;
+#endif
 static int qpnp_pon_probe(struct spmi_device *spmi)
 {
 	struct qpnp_pon *pon;
@@ -1962,6 +1979,10 @@ static int qpnp_pon_probe(struct spmi_device *spmi)
 					"qcom,store-hard-reset-reason");
 
 	qpnp_pon_debugfs_init(spmi);
+#ifdef CONFIG_CREATE_NODE
+	has_enable_wake = false;
+#endif
+
 	return 0;
 }
 
@@ -1984,6 +2005,56 @@ static int qpnp_pon_remove(struct spmi_device *spmi)
 	return 0;
 }
 
+#ifdef CONFIG_PM_SLEEP
+static int qpnp_power_on_suspend(struct device *dev)
+{
+#ifdef CONFIG_CREATE_NODE
+	struct irq_desc *desc;
+	struct qpnp_pon_config *cfg;
+	struct qpnp_pon *pon = dev_get_drvdata(dev);
+
+	cfg = &pon->pon_cfg[DOWN_KEY_SEQ];
+
+	if ((get_smartphone_calling_enable() > 0) &&
+		(!has_enable_wake)) {
+		desc = irq_to_desc(cfg->state_irq);
+		if (!desc)
+			return -EINVAL;
+		printk(KERN_ERR "%s wake_depth:%u\n",
+			__func__, desc->wake_depth);
+		enable_irq_wake(cfg->state_irq);
+		has_enable_wake = true;
+	}
+#endif
+	return 0;
+}
+
+static int qpnp_power_on_resume(struct device *dev)
+{
+#ifdef CONFIG_CREATE_NODE
+	struct irq_desc *desc;
+	struct qpnp_pon_config *cfg;
+	struct qpnp_pon *pon = dev_get_drvdata(dev);
+
+	cfg = &pon->pon_cfg[DOWN_KEY_SEQ];
+
+	if (has_enable_wake) {
+		desc = irq_to_desc(cfg->state_irq);
+		if (!desc)
+			return -EINVAL;
+		printk(KERN_ERR "%s wake_depth:%u\n",
+			__func__, desc->wake_depth);
+		disable_irq_wake(cfg->state_irq);
+		has_enable_wake = false;
+	}
+#endif
+	return 0;
+}
+#endif
+
+static SIMPLE_DEV_PM_OPS(qpnp_power_on_pm_ops, \
+				qpnp_power_on_suspend, qpnp_power_on_resume);
+
 static struct of_device_id spmi_match_table[] = {
 	{ .compatible = "qcom,qpnp-power-on", },
 	{}
@@ -1992,6 +2063,7 @@ static struct of_device_id spmi_match_table[] = {
 static struct spmi_driver qpnp_pon_driver = {
 	.driver		= {
 		.name	= "qcom,qpnp-power-on",
+		.pm	= &qpnp_power_on_pm_ops,
 		.of_match_table = spmi_match_table,
 	},
 	.probe		= qpnp_pon_probe,

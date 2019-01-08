@@ -26,6 +26,10 @@
 #include <linux/leds.h>
 #include <linux/debugfs.h>
 
+#ifdef CONFIG_YL_CHARGER_PROPERTY
+#include <linux/wakelock.h>
+#endif
+
 #define CREATE_MASK(NUM_BITS, POS) \
 	((unsigned char) (((1 << (NUM_BITS)) - 1) << (POS)))
 #define LBC_MASK(MSB_BIT, LSB_BIT) \
@@ -394,7 +398,22 @@ struct qpnp_lbc_chip {
 	/* parallel-chg params */
 	struct power_supply		parallel_psy;
 	struct delayed_work		parallel_work;
+
+	#ifdef CONFIG_YL_CHARGER_PROPERTY
+	/* yl add alarm for batt info report */
+	struct wake_lock          batt_info_alarm_wlock;
+	struct work_struct batt_info_alarm_work;
+	struct alarm report_batt_info_alarm;
+	struct workqueue_struct  *lbc_wq;
+	/* yl added for not suspend at once */
+	struct wake_lock lbc_report_info_lock;
+	#endif
+
 };
+
+#ifdef CONFIG_YL_CHARGER_PROPERTY
+static struct qpnp_lbc_chip *this_chip; /*YL add*/
+#endif
 
 static void qpnp_lbc_enable_irq(struct qpnp_lbc_chip *chip,
 					struct qpnp_lbc_irq *irq)
@@ -1372,6 +1391,8 @@ static void qpnp_lbc_set_appropriate_current(struct qpnp_lbc_chip *chip)
 {
 	unsigned int chg_current = chip->usb_psy_ma;
 
+	chg_current = min(chg_current, chip->cfg_safe_current);
+
 	if (chip->bat_is_cool && chip->cfg_cool_bat_chg_ma)
 		chg_current = min(chg_current, chip->cfg_cool_bat_chg_ma);
 	if (chip->bat_is_warm && chip->cfg_warm_bat_chg_ma)
@@ -1380,7 +1401,10 @@ static void qpnp_lbc_set_appropriate_current(struct qpnp_lbc_chip *chip)
 		chg_current = min(chg_current,
 			chip->thermal_mitigation[chip->therm_lvl_sel]);
 
-	pr_debug("setting charger current %d mA\n", chg_current);
+	pr_info("setting charger current ma=%d, psy_ma=%d, bat_cool=%d, bat_warm=%d, therm_lvl=%d\n",
+		chg_current, chip->usb_psy_ma, chip->bat_is_cool,
+		chip->bat_is_warm, chip->therm_lvl_sel);
+
 	qpnp_lbc_ibatmax_set(chip, chg_current);
 }
 
@@ -2164,6 +2188,58 @@ static int qpnp_lbc_misc_init(struct qpnp_lbc_chip *chip)
 	return rc;
 }
 
+/*yl add for modify batt info every 30minites or 60 minutes*/
+#ifdef CONFIG_YL_CHARGER_PROPERTY
+/* 30minute */
+#define G_WAKEUP_INTERVAL (30*60)
+
+static void batt_info_alarm_set(struct qpnp_lbc_chip *chip, int seconds)
+{
+	ktime_t interval = ktime_set(seconds, 0);
+
+	pr_debug("batt_info_alarm_set has been setting.\n");
+
+	alarm_start_relative(&chip->report_batt_info_alarm, interval);
+}
+
+static void batt_info_alarm_work(struct work_struct *work)
+{
+	struct qpnp_lbc_chip *chip = container_of(work,
+				struct qpnp_lbc_chip, batt_info_alarm_work);
+	union power_supply_propval ret = {0,};
+
+	if (!this_chip)
+		pr_err("chip not yet initalized\n");
+
+	pr_debug("enter %s .\n", __func__);
+
+	power_supply_changed(&chip->batt_psy);
+
+	if (qpnp_batt_power_get_property(&chip->batt_psy,
+		POWER_SUPPLY_PROP_CAPACITY, &ret) == 0) {
+
+		if (15 < ret.intval)
+			batt_info_alarm_set(chip, 2*G_WAKEUP_INTERVAL);
+		else
+			batt_info_alarm_set(chip, G_WAKEUP_INTERVAL);
+	}
+}
+
+static enum alarmtimer_restart batt_info_alarm_callback(struct alarm *alarm,
+								ktime_t now)
+{
+	struct qpnp_lbc_chip *chip = container_of(alarm,
+			struct qpnp_lbc_chip, report_batt_info_alarm);
+
+	pr_debug("battery alarm is coming\n");
+	wake_lock_timeout(&chip->batt_info_alarm_wlock, 2*HZ);
+	queue_work(chip->lbc_wq, &chip->batt_info_alarm_work);
+
+	return ALARMTIMER_NORESTART;
+}
+#endif
+/*yl add end*/
+
 static int show_lbc_config(struct seq_file *m, void *data)
 {
 	struct qpnp_lbc_chip *chip = m->private;
@@ -2463,7 +2539,11 @@ static irqreturn_t qpnp_lbc_usbin_valid_irq_handler(int irq, void *_chip)
 	unsigned long flags;
 
 	usb_present = qpnp_lbc_is_usb_chg_plugged_in(chip);
-	pr_debug("usbin-valid triggered: %d\n", usb_present);
+	pr_info("usbin-valid triggered: %d\n", usb_present);
+
+	#ifdef CONFIG_YL_CHARGER_PROPERTY
+	wake_lock_timeout(&chip->lbc_report_info_lock, (2*HZ));
+	#endif
 
 	if (chip->usb_present ^ usb_present) {
 		chip->usb_present = usb_present;
@@ -3334,6 +3414,26 @@ static int qpnp_lbc_main_probe(struct spmi_device *spmi)
 			pr_err("Couldn't create lbc_config debug file\n");
 	}
 
+	/*yulong add*/
+	#ifdef CONFIG_YL_CHARGER_PROPERTY
+	chip->lbc_wq = create_singlethread_workqueue("lbc_charger");
+	if (!chip->lbc_wq) {
+		dev_err(chip->dev, "create workqueue faild.\n");
+		return -ENOMEM;
+	}
+	wake_lock_init(&chip->lbc_report_info_lock, WAKE_LOCK_SUSPEND,
+						"linearcharger-report-info");
+	wake_lock_init(&chip->batt_info_alarm_wlock, WAKE_LOCK_SUSPEND,
+						"batt_info_alarm");
+	INIT_WORK(&chip->batt_info_alarm_work, batt_info_alarm_work);
+	alarm_init(&chip->report_batt_info_alarm, ALARM_REALTIME,
+			batt_info_alarm_callback);
+
+	this_chip = chip;
+	batt_info_alarm_set(chip, G_WAKEUP_INTERVAL);
+	#endif
+	/*yulong add end*/
+
 	pr_info("Probe chg_dis=%d bpd=%d usb=%d batt_pres=%d batt_volt=%d soc=%d\n",
 			chip->cfg_charging_disabled,
 			chip->cfg_bpd_detection,
@@ -3382,6 +3482,17 @@ static int qpnp_lbc_remove(struct spmi_device *spmi)
 	mutex_destroy(&chip->jeita_configure_lock);
 	mutex_destroy(&chip->chg_enable_lock);
 	dev_set_drvdata(&spmi->dev, NULL);
+
+	/*yulong add*/
+	#ifdef CONFIG_YL_CHARGER_PROPERTY
+	wake_lock_destroy(&chip->lbc_report_info_lock);
+	alarm_cancel(&chip->report_batt_info_alarm);
+	cancel_work_sync(&chip->batt_info_alarm_work);
+	wake_lock_destroy(&chip->batt_info_alarm_wlock);
+	destroy_workqueue(chip->lbc_wq);
+	#endif
+	/*yulong end*/
+
 	return 0;
 }
 

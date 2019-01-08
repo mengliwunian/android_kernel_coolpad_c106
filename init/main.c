@@ -394,6 +394,8 @@ static noinline void __init_refok rest_init(void)
 }
 
 /* Check for early params. */
+int pon_batt_volt;
+EXPORT_SYMBOL(pon_batt_volt);
 static int __init do_early_param(char *param, char *val, const char *unused)
 {
 	const struct obs_kernel_param *p;
@@ -408,6 +410,10 @@ static int __init do_early_param(char *param, char *val, const char *unused)
 		}
 	}
 	/* We accept everything at this stage. */
+	 if ((strncmp(param, "pon_val", 8) == 0)) {
+		pon_batt_volt = (int) simple_strtol(val, NULL, 10) / 1000;
+		pr_info("power on voltage is %s, pon_batt_volt=%d\n", val, pon_batt_volt);
+	}
 	return 0;
 }
 

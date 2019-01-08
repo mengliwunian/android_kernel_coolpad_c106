@@ -17,6 +17,11 @@
 #include "camera.h"
 #include "msm_cci.h"
 #include "msm_camera_dt_util.h"
+#include "msm_sensor_module_info.h" //Add by hanjianfeng for eeprom match of camera LAFITE-421 (QL1530) 20160104
+#ifdef CONFIG_GET_HARDWARE_INFO
+#include <soc/qcom/hardware_info.h>
+#endif
+#include <linux/bootreason.h>
 
 /* Logging macro */
 #undef CDBG
@@ -661,7 +666,7 @@ int32_t msm_sensor_driver_probe(void *setting,
 
 	unsigned long                        mount_pos = 0;
 	uint32_t                             is_yuv;
-
+	char module_info[MAX_SENSOR_NAME] = "\0"; //Add by hanjianfeng for eeprom match of camera LAFITE-421 (QL1530) 20160104
 	/* Validate input parameters */
 	if (!setting) {
 		pr_err("failed: slave_info %p", setting);
@@ -732,6 +737,9 @@ int32_t msm_sensor_driver_probe(void *setting,
 			slave_info32->sensor_init_params;
 		slave_info->output_format =
 			slave_info32->output_format;
+		strlcpy(slave_info->sensor_module_info, slave_info32->sensor_module_info,
+			sizeof(slave_info->sensor_module_info));
+		slave_info->sensor_gpio_id = slave_info32->sensor_gpio_id;
 		kfree(slave_info32);
 	} else
 #endif
@@ -900,6 +908,29 @@ CSID_TG:
 	s_ctrl->sensordata->eeprom_name = slave_info->eeprom_name;
 	s_ctrl->sensordata->actuator_name = slave_info->actuator_name;
 	s_ctrl->sensordata->ois_name = slave_info->ois_name;
+	/*Added by hanjianfeng for eeprom match of camera,LAFITE-421 (QL1530) 20160104,begin*/
+	if(strlen(s_ctrl->sensordata->eeprom_name) > 0 )
+	{
+		msm_sensor_module_info_get(slave_info->camera_id, module_info);
+		if(strcmp(module_info, s_ctrl->sensordata->eeprom_name) == 0)
+		{
+			pr_err("%s: eeprom module info match succ!want:%s,get:%s\n", __func__, s_ctrl->sensordata->eeprom_name, module_info);
+	}
+		else if(strcmp(module_info, "unknown") == 0)
+		{
+			pr_err("%s: eeprom module info match fail!because don't need to match by otp!\n", __func__);
+		}
+		else
+		{
+			pr_err("%s: eeprom module info match fail!because can not match!want:%s,get:%s\n", __func__, s_ctrl->sensordata->eeprom_name, module_info);
+			goto free_camera_info;
+		}
+	}
+	else
+	{
+		pr_err("%s:eeprom module info match.This sensor have not config eeprom.", __func__);
+	}
+	/*Added by hanjianfeng for eeprom match of camera,LAFITE-421 (QL1530) 20160104,end*/
 	/*
 	 * Update eeporm subdevice Id by input eeprom name
 	 */
@@ -929,9 +960,50 @@ CSID_TG:
 		pr_err("%s power up failed", slave_info->sensor_name);
 		goto free_camera_info;
 	}
-
-	pr_err("%s probe succeeded", slave_info->sensor_name);
-
+	/*Begin added by yangyongfeng for camera hardware info and camera gpio id (ql1530) 20151221 */
+	if(slave_info->sensor_module_info){
+		pr_err("tangjie sensor_module_info %s\n", slave_info->sensor_module_info);
+		s_ctrl->sensordata->sensor_module_info = slave_info->sensor_module_info;
+	}
+	pr_err("sensor_gpio_id %d\n", slave_info->sensor_gpio_id);
+	s_ctrl->sensordata->sensor_gpio_id = slave_info->sensor_gpio_id;
+	/*End added by yangyongfeng for camera hardware info and camera gpio id (ql1530) 20151221 */ 
+	pr_err("%s probe succeeded\n", slave_info->sensor_name);
+/*Begin  added by yangyongfeng for camera sensor hardware_info (ql1530) 20151222 */
+#ifdef CONFIG_GET_HARDWARE_INFO
+        if(slave_info != NULL)
+        {
+	   if(slave_info->sensor_init_params.position == BACK_CAMERA_B)
+           {
+		if(strlen(slave_info->sensor_module_info) > 0)
+                {
+	                register_hardware_info(MAIN_CAM, slave_info->sensor_module_info);
+                        pr_err("%s register rear camera hardware info success.\n",slave_info->sensor_name);
+		}
+                else
+                {
+		       pr_err("%s camera hardware info is NULL.\n",slave_info->sensor_name);
+		}
+	   }
+           else if(slave_info->sensor_init_params.position == FRONT_CAMERA_B)
+           {
+		if(strlen(slave_info->sensor_module_info) > 0)
+                {
+		        register_hardware_info(SUB_CAM, slave_info->sensor_module_info);
+                        pr_err("%s register front camera hardware info success.\n",slave_info->sensor_name);
+		}
+                else
+                {
+			pr_err("%s camera hardware info is NULL.\n",slave_info->sensor_name);
+		}
+          }
+          else
+          {
+		pr_err("%s register hardware info failed.\n",slave_info->sensor_name);
+	  }
+       }
+#endif
+/*End  by yangyongfeng for camera sensor hardware_info (ql1530) 20151222 */
 	/*
 	  Set probe succeeded flag to 1 so that no other camera shall
 	 * probed on this slot
@@ -1280,6 +1352,152 @@ FREE_SENSOR_I2C_CLIENT:
 	return rc;
 }
 
+
+/* if the flash module is the philip module */
+static int flash_module_phlips = 0;
+/* hardware version */
+static int hardware_version_C1 = 0xfe;
+/* boot board will show the status of GPIO50 and hardware version **/
+static int boot_board = 0;
+
+static int yl_get_flash_module(void)
+{
+	hardware_version_C1 = yl_get_hardware_version();
+	boot_board = yl_get_boardhwid();
+
+        pr_err("YULONG:jk:%s hardware version = %d, boot board is %d\n",
+                __func__, hardware_version_C1, boot_board);
+        if((0 == hardware_version_C1)
+                || (1 == hardware_version_C1)
+                || (2 == hardware_version_C1)
+                || (3 == hardware_version_C1)
+                || (10 == hardware_version_C1)) {
+                flash_module_phlips = 0;
+        } else if((4 == hardware_version_C1)
+                && (0x0b == boot_board)) {
+                flash_module_phlips = 0;
+        } else if((5 == hardware_version_C1)
+                && (0x02 == boot_board)) {
+                flash_module_phlips = 0;
+        } else if((10 == hardware_version_C1)
+                && (0x06 == boot_board)) {
+                flash_module_phlips = 0;
+        } else {
+                flash_module_phlips = 1;
+        }
+        pr_err("YULONG:jk:%s flash module %d\n", __func__, flash_module_phlips);
+        return flash_module_phlips;
+}
+
+
+
+
+//add fot material-test failed
+static ssize_t camerainfo_read(struct file *file, char __user *buff,
+		size_t count, loff_t *offp)
+{
+	struct miscdevice *cdn = (struct miscdevice *)file->private_data;
+	struct msm_sensor_ctrl_t *s_ctrl = container_of(cdn,struct msm_sensor_ctrl_t, camerainfo_devnode);
+	char buf[64];
+	char sensor_name[10] = {0};
+	char module_name[10] = {0};
+	char *module_num_ptr = NULL;
+
+	if (!cdn) {
+		pr_err("%s No private_data\n", __func__);
+		return 0;
+	}
+        printk("MODULE_INFO:camera%d,sensor_name=%s\n",s_ctrl->id,s_ctrl->sensordata->sensor_name);
+	if ((*offp) != 0)
+		return 0;
+        pr_err("YULONG:feiyc:%s module_id 0x%x\n", __func__, s_ctrl->module_id);
+	switch(s_ctrl->module_id){
+		case MODULE_QTECH_IMX258:
+		case MODULE_QTECH_OV8856:
+			strcpy(module_name,"QTECH");
+			break;
+		case MODULE_OFILM_IMX258:
+		case MODULE_OFILM_OV8856:
+                case MODULE_OFILM_OV16880:
+			strcpy(module_name,"OFILM");
+                        break;
+                case MODULE_ZHENGQIAO_IMX258:
+                case MODULE_ZHENGQIAO_OV8856:
+                        strcpy(module_name,"ZHENGQIAO");
+                        break;
+		default:
+			strcpy(module_name,"NODEF");
+	}
+
+	module_num_ptr = strnchr(s_ctrl->sensordata->sensor_name,
+				strlen(s_ctrl->sensordata->sensor_name), '_');
+	if (NULL != module_num_ptr) 
+	{
+		if(s_ctrl->id == 0)
+		{
+			if(s_ctrl->module_id == MODULE_QTECH_IMX258)
+			{
+				strlcpy(sensor_name, (char *)s_ctrl->sensordata->sensor_name,
+					module_num_ptr - s_ctrl->sensordata->sensor_name + 1);
+				snprintf(buf, sizeof(buf), "%s %s+%s_mono %s\n", "1",
+					sensor_name, sensor_name,module_name);
+			}
+			else
+			{
+				strlcpy(sensor_name, (char *)s_ctrl->sensordata->sensor_name,
+					module_num_ptr - s_ctrl->sensordata->sensor_name + 1);
+				snprintf(buf, sizeof(buf), "%s %s %s\n", "1",sensor_name,module_name);
+			}
+		}
+		else if(s_ctrl->id == 1)
+		{
+			strlcpy(sensor_name, (char *)s_ctrl->sensordata->sensor_name,
+				module_num_ptr - s_ctrl->sensordata->sensor_name + 1);
+			snprintf(buf, sizeof(buf), "%s %s %s\n", "1",sensor_name,module_name);
+		}
+	} 
+	else 
+	{
+		if(s_ctrl->id == 0)
+		{
+			if(s_ctrl->module_id == MODULE_QTECH_IMX258)
+			{
+				strlcpy(sensor_name, (char *)s_ctrl->sensordata->sensor_name,
+					module_num_ptr - s_ctrl->sensordata->sensor_name + 1);
+				snprintf(buf, sizeof(buf), "%s %s+%s_mono %s\n", "1", sensor_name,
+					sensor_name,module_name);
+
+			}
+			else
+			{
+				strlcpy(sensor_name, (char *)s_ctrl->sensordata->sensor_name,
+					module_num_ptr - s_ctrl->sensordata->sensor_name + 1);
+				snprintf(buf, sizeof(buf), "%s %s %s\n", "1",sensor_name,module_name);
+			}
+		}
+		else if(s_ctrl->id == 1)
+		snprintf(buf, sizeof(buf), "%s %s %s\n", "1",s_ctrl->sensordata->sensor_name,module_name);
+	}
+	pr_err("%s the module info is %s\n", __func__, buf);
+	return simple_read_from_buffer(buff, count, offp, buf, strlen(buf));
+}
+
+static int camerainfo_open(struct inode *inode, struct file *file)
+{
+	struct miscdevice *cdn = (struct miscdevice *)file->private_data;
+	struct msm_sensor_ctrl_t *s_ctrl = container_of(cdn,
+	struct msm_sensor_ctrl_t, camerainfo_devnode);
+	pr_err("%s %p %p\n", __func__, cdn, s_ctrl);
+	return 0;
+}
+
+static const struct file_operations camerainfo_fops = {
+	.owner           = THIS_MODULE,
+	.open             = camerainfo_open,
+	.read              = camerainfo_read,
+};
+//end
+
 static int32_t msm_sensor_driver_platform_probe(struct platform_device *pdev)
 {
 	int32_t rc = 0;
@@ -1310,6 +1528,18 @@ static int32_t msm_sensor_driver_platform_probe(struct platform_device *pdev)
 
 	/* Fill device in power info */
 	s_ctrl->sensordata->power_info.dev = &pdev->dev;
+//add fot material-test failed
+	 s_ctrl->camerainfo_devnode.minor = MISC_DYNAMIC_MINOR;
+	pr_err("failed: sensor name is %s, ctrl id is %d\n", s_ctrl->sensordata->sensor_name, s_ctrl->id);
+	if (s_ctrl->id == 0)
+		s_ctrl->camerainfo_devnode.name = "camera0";
+	else if(s_ctrl->id == 1)
+		s_ctrl->camerainfo_devnode.name = "camera1";	
+	else if(s_ctrl->id == 2 && (1 == yl_get_flash_module()))
+		s_ctrl->camerainfo_devnode.name = "PhilipFlash";
+	s_ctrl->camerainfo_devnode.fops = &camerainfo_fops;
+	misc_register(&s_ctrl->camerainfo_devnode);
+//add end	   
 	return rc;
 FREE_S_CTRL:
 	kfree(s_ctrl);

@@ -1291,10 +1291,13 @@ int hid_report_raw_event(struct hid_device *hid, int type, u8 *data, int size,
 	int rsize, csize = size;
 	u8 *cdata = data;
 	int ret = 0;
+	int report_size_with_id;
 
 	report = hid_get_report(report_enum, data);
 	if (!report)
 		goto out;
+
+	report_size_with_id = (report->size >> 3) + (report_enum->numbered ? 1 : 0);
 
 	if (report_enum->numbered) {
 		cdata++;
@@ -1321,11 +1324,15 @@ int hid_report_raw_event(struct hid_device *hid, int type, u8 *data, int size,
 	}
 
 	if (hid->claimed != HID_CLAIMED_HIDRAW && report->maxfield) {
-		for (a = 0; a < report->maxfield; a++)
-			hid_input_field(hid, report->field[a], cdata, interrupt);
-		hdrv = hid->driver;
-		if (hdrv && hdrv->report)
-			hdrv->report(hid, report);
+		while (csize > 0) {
+			for (a = 0; a < report->maxfield; a++)
+				hid_input_field(hid, report->field[a], cdata, interrupt);
+			hdrv = hid->driver;
+			if (hdrv && hdrv->report)
+				hdrv->report(hid, report);
+				csize -= report_size_with_id;
+				cdata += report_size_with_id;
+		}
 	}
 
 	if (hid->claimed & HID_CLAIMED_INPUT)

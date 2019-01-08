@@ -363,6 +363,9 @@ struct pwm_config_data {
 	u8	default_mode;
 	bool	pwm_enabled;
 	bool use_blink;
+	bool use_no_lpg_blink;
+	u32 pwm_blink_period_us;
+	u32 pwm_blink_duty_us;
 	bool blinking;
 };
 
@@ -967,6 +970,8 @@ static int qpnp_mpp_set(struct qpnp_led_data *led)
 			goto err_mpp_reg_write;
 		}
 
+		msleep(300); /* delay 300ms to sync lcd backlight */
+
 		rc = qpnp_led_masked_write(led,
 				LED_MPP_EN_CTRL(led->base), LED_MPP_EN_MASK,
 				LED_MPP_EN_ENABLE);
@@ -984,6 +989,141 @@ static int qpnp_mpp_set(struct qpnp_led_data *led)
 				led->mpp_cfg->pwm_cfg->default_mode;
 			pwm_disable(led->mpp_cfg->pwm_cfg->pwm_dev);
 		}
+		rc = qpnp_led_masked_write(led,
+					LED_MPP_MODE_CTRL(led->base),
+					LED_MPP_MODE_MASK,
+					LED_MPP_MODE_DISABLE);
+		if (rc) {
+			dev_err(&led->spmi_dev->dev,
+					"Failed to write led mode reg\n");
+			goto err_mpp_reg_write;
+		}
+
+		rc = qpnp_led_masked_write(led,
+					LED_MPP_EN_CTRL(led->base),
+					LED_MPP_EN_MASK,
+					LED_MPP_EN_DISABLE);
+		if (rc) {
+			dev_err(&led->spmi_dev->dev,
+					"Failed to write led enable reg\n");
+			goto err_mpp_reg_write;
+		}
+
+		if (led->mpp_cfg->mpp_reg && led->mpp_cfg->enable) {
+			rc = regulator_disable(led->mpp_cfg->mpp_reg);
+			if (rc) {
+				dev_err(&led->spmi_dev->dev,
+					"MPP regulator disable failed(%d)\n",
+					rc);
+				return rc;
+			}
+
+			rc = regulator_set_voltage(led->mpp_cfg->mpp_reg,
+						0, led->mpp_cfg->max_uV);
+			if (rc) {
+				dev_err(&led->spmi_dev->dev,
+					"MPP regulator voltage set failed(%d)\n",
+					rc);
+				return rc;
+			}
+		}
+
+		led->mpp_cfg->enable = false;
+	}
+
+	if (led->mpp_cfg->pwm_mode != MANUAL_MODE)
+		led->mpp_cfg->pwm_cfg->blinking = false;
+	qpnp_dump_regs(led, mpp_debug_regs, ARRAY_SIZE(mpp_debug_regs));
+
+	return 0;
+
+err_mpp_reg_write:
+	if (led->mpp_cfg->mpp_reg)
+		regulator_disable(led->mpp_cfg->mpp_reg);
+err_reg_enable:
+	if (led->mpp_cfg->mpp_reg)
+		regulator_set_voltage(led->mpp_cfg->mpp_reg, 0,
+							led->mpp_cfg->max_uV);
+	led->mpp_cfg->enable = false;
+
+	return rc;
+}
+
+
+static int qpnp_mpp_blink_set(struct qpnp_led_data *led)
+{
+	int rc;
+	u8 val;
+	int duty_us, period_us;
+
+	if (led->cdev.brightness) {
+		if (led->mpp_cfg->mpp_reg && !led->mpp_cfg->enable) {
+			rc = regulator_set_voltage(led->mpp_cfg->mpp_reg,
+					led->mpp_cfg->min_uV,
+					led->mpp_cfg->max_uV);
+			if (rc) {
+				dev_err(&led->spmi_dev->dev,
+					"Regulator voltage set failed rc=%d\n",
+									rc);
+				return rc;
+			}
+
+			rc = regulator_enable(led->mpp_cfg->mpp_reg);
+			if (rc) {
+				dev_err(&led->spmi_dev->dev,
+					"Regulator enable failed(%d)\n", rc);
+				goto err_reg_enable;
+			}
+		}
+
+		led->mpp_cfg->enable = true;
+
+		if (led->cdev.brightness < led->mpp_cfg->min_brightness) {
+			dev_warn(&led->spmi_dev->dev,
+				"brightness is less than supported..." \
+				"set to minimum supported\n");
+			led->cdev.brightness = led->mpp_cfg->min_brightness;
+		}
+
+		/*config pwm for brightness scaling*/
+		period_us = led->mpp_cfg->pwm_cfg->pwm_blink_period_us;
+		duty_us = led->mpp_cfg->pwm_cfg->pwm_blink_duty_us;
+
+		rc = pwm_config_us(
+			led->mpp_cfg->pwm_cfg->pwm_dev,
+			duty_us,
+			period_us);
+
+		if (rc < 0) {
+			dev_err(&led->spmi_dev->dev, "Failed to " \
+				"configure pwm for new values\n");
+			goto err_mpp_reg_write;
+		}
+
+		pwm_enable(led->mpp_cfg->pwm_cfg->pwm_dev);
+
+		val = (led->mpp_cfg->source_sel & LED_MPP_SRC_MASK) |
+			(led->mpp_cfg->mode_ctrl & LED_MPP_MODE_CTRL_MASK);
+
+		rc = qpnp_led_masked_write(led,
+			LED_MPP_MODE_CTRL(led->base), LED_MPP_MODE_MASK,
+			val);
+		if (rc) {
+			dev_err(&led->spmi_dev->dev,
+					"Failed to write led mode reg\n");
+			goto err_mpp_reg_write;
+		}
+
+		rc = qpnp_led_masked_write(led,
+				LED_MPP_EN_CTRL(led->base), LED_MPP_EN_MASK,
+				LED_MPP_EN_ENABLE);
+		if (rc) {
+			dev_err(&led->spmi_dev->dev,
+					"Failed to write led enable " \
+					"reg\n");
+			goto err_mpp_reg_write;
+		}
+	} else {
 		rc = qpnp_led_masked_write(led,
 					LED_MPP_MODE_CTRL(led->base),
 					LED_MPP_MODE_MASK,
@@ -2642,7 +2782,11 @@ static void led_blink(struct qpnp_led_data *led,
 				dev_err(&led->spmi_dev->dev,
 				"RGB set brightness failed (%d)\n", rc);
 		} else if (led->id == QPNP_ID_LED_MPP) {
-			rc = qpnp_mpp_set(led);
+			if (pwm_cfg->use_no_lpg_blink)
+				rc = qpnp_mpp_blink_set(led);
+			else
+				rc = qpnp_mpp_set(led);
+
 			if (rc < 0)
 				dev_err(&led->spmi_dev->dev,
 				"MPP set brightness failed (%d)\n", rc);
@@ -3430,6 +3574,21 @@ static int qpnp_get_config_pwm(struct pwm_config_data *pwm_cfg,
 	pwm_cfg->use_blink =
 		of_property_read_bool(node, "qcom,use-blink");
 
+	pwm_cfg->use_no_lpg_blink =
+		of_property_read_bool(node, "qcom,use-no-lpg-blink");
+
+	if (pwm_cfg->use_no_lpg_blink) {
+		rc = of_property_read_u32(node, "qcom,pwm-blink-period-us",
+						&val);
+		if (!rc)
+			pwm_cfg->pwm_blink_period_us = val;
+
+		rc = of_property_read_u32(node, "qcom,pwm-blink-duty-us",
+						&val);
+		if (!rc)
+			pwm_cfg->pwm_blink_duty_us = val;
+	}
+
 	if (pwm_cfg->mode == LPG_MODE || pwm_cfg->use_blink) {
 		pwm_cfg->duty_cycles =
 			devm_kzalloc(&spmi_dev->dev,
@@ -3549,7 +3708,8 @@ static int qpnp_get_config_pwm(struct pwm_config_data *pwm_cfg,
 	return 0;
 
 bad_lpg_params:
-	pwm_cfg->use_blink = false;
+	if (!pwm_cfg->use_no_lpg_blink)
+		pwm_cfg->use_blink = false;
 	if (pwm_cfg->mode == PWM_MODE) {
 		dev_err(&spmi_dev->dev, "LPG parameters not set for" \
 			" blink mode, defaulting to PWM mode\n");
@@ -4049,8 +4209,9 @@ static int qpnp_leds_probe(struct spmi_device *spmi)
 				if (rc)
 					goto fail_id_check;
 
-				rc = sysfs_create_group(&led->cdev.dev->kobj,
-					&lpg_attr_group);
+				if (!led->mpp_cfg->pwm_cfg->use_no_lpg_blink)
+					rc = sysfs_create_group(&led->cdev.\
+						dev->kobj, &lpg_attr_group);
 				if (rc)
 					goto fail_id_check;
 			} else if (led->mpp_cfg->pwm_cfg->mode == LPG_MODE) {
@@ -4190,8 +4351,11 @@ static int qpnp_leds_remove(struct spmi_device *spmi)
 			if (led_array[i].mpp_cfg->pwm_cfg->use_blink) {
 				sysfs_remove_group(&led_array[i].cdev.dev->\
 					kobj, &blink_attr_group);
-				sysfs_remove_group(&led_array[i].cdev.dev->\
-					kobj, &lpg_attr_group);
+				if (!led_array[i].mpp_cfg->pwm_cfg->\
+					use_no_lpg_blink)
+					sysfs_remove_group(&led_array[i].\
+						cdev.dev->kobj,
+							&lpg_attr_group);
 			} else if (led_array[i].mpp_cfg->pwm_cfg->mode\
 					== LPG_MODE)
 				sysfs_remove_group(&led_array[i].cdev.dev->\

@@ -40,6 +40,7 @@ obj-$(CONFIG_USB_CCID_BRIDGE)	+= class/
 
 obj-$(CONFIG_USB_STORAGE)	+= storage/
 obj-$(CONFIG_USB)		+= storage/
+obj-$(CONFIG_USB)		+= typec/
 
 obj-$(CONFIG_USB_MDC800)	+= image/
 obj-$(CONFIG_USB_MICROTEK)	+= image/

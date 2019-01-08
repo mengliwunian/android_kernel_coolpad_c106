@@ -1,0 +1,11 @@
+config PRODUCT_C1
+	bool "Enable yulong c1 product configs"
+	default n
+	help
+	  Enable yulong c1 product configs
+
+config YL_SET_VOLTAGE_LEVEL
+	bool "Set voltage level"
+	depends on ARCH_MSM
+	  help
+	  Set voltage level

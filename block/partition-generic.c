@@ -17,6 +17,9 @@
 #include <linux/ctype.h>
 #include <linux/genhd.h>
 #include <linux/blktrace_api.h>
+#ifdef CONFIG_MMC_YL_PARAMS
+#include <linux/yl_params.h>
+#endif
 
 #include "partitions/check.h"
 
@@ -531,6 +534,10 @@ rescan:
 			       disk->disk_name, p, -PTR_ERR(part));
 			continue;
 		}
+#ifdef CONFIG_MMC_YL_PARAMS
+		notify_ylparams(part);
+#endif
+
 #ifdef CONFIG_BLK_DEV_MD
 		if (state->parts[p].flags & ADDPART_FLAG_RAID)
 			md_autodetect_dev(part_to_dev(part)->devt);

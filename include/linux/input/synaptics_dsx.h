@@ -58,6 +58,7 @@ struct synaptics_rmi4_capacitance_button_map {
 struct synaptics_rmi4_platform_data {
 	bool x_flip;
 	bool y_flip;
+	bool swap_axes;
 	bool i2c_pull_up;
 	bool power_down_enable;
 	bool disable_gpios;
@@ -81,6 +82,30 @@ struct synaptics_rmi4_platform_data {
 	unsigned int package_id;
 	int (*gpio_config)(unsigned gpio, bool configure);
 	struct synaptics_rmi4_capacitance_button_map *capacitance_button_map;
+	int (*init)(void);
+	void (*release)(void);
+	int (*power)(int on);
+	int (*reset)(int ms);
+	int (*suspend)(void);
+	int (*resume)(void);
+	unsigned char (*get_id_pin)(void);
+	struct virtual_keys_button *buttons;
+	int nbuttons;
+	int screen_x;
+	int screen_y;
+	int key_debounce;
+	struct regulator *ts_vcc_i2c;
+	struct regulator *ts_vdd;
+	u32 reset_gpio_flags;
+	u32 irq_gpio_flags;
+	unsigned char hw_type;	/*COB:1  COF:2*/
+	unsigned int ic_type;
 };
+
+extern unsigned char SYNA_DEBUG_ON;
+#define SYNA_DEBUG(fmt, arg...)  do {\
+	if (SYNA_DEBUG_ON)\
+		pr_notice("<< SYNA-DEBUG >> [%d]"fmt"\n", __LINE__, ##arg);\
+} while (0)
 
 #endif

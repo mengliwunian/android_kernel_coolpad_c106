@@ -25,6 +25,8 @@
 #undef CDBG
 #define CDBG(fmt, args...) pr_debug(fmt, ##args)
 
+static int8_t num_camera_powerdown_count = 0;
+
 int msm_camera_fill_vreg_params(struct camera_vreg_t *cam_vreg,
 	int num_vreg, struct msm_sensor_power_setting *power_setting,
 	uint16_t power_setting_size)
@@ -1098,6 +1100,26 @@ int msm_camera_init_gpio_pin_tbl(struct device_node *of_node,
 		rc = 0;
 	}
 
+	rc = of_property_read_u32(of_node, "qcom,gpio-cameraid", &val);
+	if (rc != -EINVAL) {
+		if (rc < 0) {
+			pr_err("%s:%d read qcom,gpio-cameraid failed rc %d\n",
+				__func__, __LINE__, rc);
+			goto ERROR;
+		} else if (val >= gpio_array_size) {
+			pr_err("%s:%d qcom,qcom,gpio-cameraid invalid %d\n",
+				__func__, __LINE__, val);
+			rc = -EINVAL;
+			goto ERROR;
+		}
+		gconf->gpio_num_info->gpio_num[SENSOR_GPIO_ID] =
+			gpio_array[val];
+		gconf->gpio_num_info->valid[SENSOR_GPIO_ID] = 1;
+		CDBG("%s qcom,gpio-cameraid %d\n", __func__,
+			gconf->gpio_num_info->gpio_num[SENSOR_GPIO_ID]);
+	} else {
+		rc = 0;
+	}
 	return rc;
 
 ERROR:
@@ -1285,7 +1307,8 @@ int msm_camera_power_up(struct msm_camera_power_ctrl_t *ctrl,
 {
 	int rc = 0, index = 0, no_gpio = 0, ret = 0;
 	struct msm_sensor_power_setting *power_setting = NULL;
-
+        num_camera_powerdown_count++;
+       pr_err("up num_camera_powerdown_count=%d",num_camera_powerdown_count);
 	CDBG("%s:%d\n", __func__, __LINE__);
 	if (!ctrl || !sensor_i2c_client) {
 		pr_err("failed ctrl %p sensor_i2c_client %p\n", ctrl,
@@ -1510,7 +1533,9 @@ int msm_camera_power_down(struct msm_camera_power_ctrl_t *ctrl,
 	int index = 0, ret = 0;
 	struct msm_sensor_power_setting *pd = NULL;
 	struct msm_sensor_power_setting *ps;
-
+        if(num_camera_powerdown_count)
+        num_camera_powerdown_count --;
+       pr_err("dowm num_camera_powerdown_count=%d",num_camera_powerdown_count);
 	CDBG("%s:%d\n", __func__, __LINE__);
 	if (!ctrl || !sensor_i2c_client) {
 		pr_err("failed ctrl %p sensor_i2c_client %p\n", ctrl,
@@ -1553,10 +1578,19 @@ int msm_camera_power_down(struct msm_camera_power_ctrl_t *ctrl,
 			if (!ctrl->gpio_conf->gpio_num_info->valid
 				[pd->seq_val])
 				continue;
+                        if((num_camera_powerdown_count) && (SENSOR_GPIO_VIO == pd->seq_val ))
+                       
+                        {
+		        	pr_err("%s camera use Sx voltage ,so not disable the voltages-GPIO\n", __func__);
+                          
+                        }
+                        else{
+
 			gpio_set_value_cansleep(
 				ctrl->gpio_conf->gpio_num_info->gpio_num
 				[pd->seq_val],
 				(int) pd->config_val);
+                        }
 			break;
 		case SENSOR_VREG:
 			if (pd->seq_val == INVALID_VREG)

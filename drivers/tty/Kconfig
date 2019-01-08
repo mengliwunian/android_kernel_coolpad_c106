@@ -13,7 +13,7 @@ config VT
 	bool "Virtual terminal" if EXPERT
 	depends on !S390 && !UML
 	select INPUT
-	default y
+	default n
 	---help---
 	  If you say Y here, you will get support for terminal devices with
 	  display and keyboard devices. These are called "virtual" because you
@@ -43,7 +43,7 @@ config VT
 
 config CONSOLE_TRANSLATIONS
 	depends on VT
-	default y
+	default n
 	bool "Enable character translations in console" if EXPERT
 	---help---
 	  This enables support for font mapping and Unicode translation
@@ -52,7 +52,7 @@ config CONSOLE_TRANSLATIONS
 config VT_CONSOLE
 	bool "Support for console on virtual terminal" if EXPERT
 	depends on VT
-	default y
+	default n
 	---help---
 	  The system console is the device which receives all kernel messages
 	  and warnings and which allows logins in single user mode. If you
@@ -72,13 +72,13 @@ config VT_CONSOLE
 	  If unsure, say Y.
 
 config VT_CONSOLE_SLEEP
-	def_bool y
+	def_bool n
 	depends on VT_CONSOLE && PM_SLEEP
 
 config HW_CONSOLE
 	bool
 	depends on VT && !UML
-	default y
+	default n
 
 config VT_HW_CONSOLE_BINDING
        bool "Support for binding and unbinding console drivers"
