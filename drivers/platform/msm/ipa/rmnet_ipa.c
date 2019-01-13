@@ -2206,10 +2206,9 @@ static int ssr_notifier_cb(struct notifier_block *this,
 		}
 		if (SUBSYS_BEFORE_POWERUP == code) {
 			pr_info("IPA received MPSS BEFORE_POWERUP\n");
-            if(atomic_read(&is_ssr))
-            {
-                ipa_qmi_service_exit();
-            }
+			if (atomic_read(&is_ssr))
+				/* clean up cached QMI msg/handlers */
+				ipa_qmi_service_exit();
 			ipa_proxy_clk_vote();
 			pr_info("IPA BEFORE_POWERUP handling is complete\n");
 			return NOTIFY_DONE;
