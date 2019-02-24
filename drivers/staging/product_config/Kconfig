@@ -1,0 +1,5 @@
+config PRODUCT_C1
+	bool "Enable yulong c1 product configs"
+	default n
+	help
+	  Enable yulong c1 product configs

@@ -1027,6 +1027,21 @@ config SECURE_TOUCH
 
 	  If unsure, say N.
 
+config TOUCHSCREEN_GOODIX_TS
+       tristate "FocalTech touchscreens"
+       depends on I2C
+       help
+         Say Y here if you have a goodix-ts touchscreen.
+	 goodix-ts controllers are multi touch controllers which can
+	 report 5 touches at a time.
+
+         If unsure, say N.
+
+         To compile this driver as a module, choose M here: the
+         module will be called goodix-ts.
+
+source "drivers/input/touchscreen/goodix-ts/Kconfig"
+
 config TOUCHSCREEN_GT9XX
 	bool "Goodix touchpanel GT9xx series"
 	depends on I2C
